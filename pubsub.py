@@ -8,8 +8,8 @@ from backend.blockchain.block import Block
 from backend.wallet.transaction import Transaction
 
 pnconfig = PNConfiguration()
-pnconfig.subscribe_key = 'sub-c-97389b27-a42a-4bd8-ac69-e22186d471bb'
-pnconfig.publish_key = 'pub-c-be8a7476-2332-4584-a77d-27371a8d41b9'
+pnconfig.subscribe_key = '##########################################'
+pnconfig.publish_key = ''##########################################'
 pnconfig.uuid = 'KrakenKeyset'
 
 CHANNELS = {
