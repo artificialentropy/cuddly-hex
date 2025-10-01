@@ -1,0 +1,29 @@
+FROM python:3.11-slim
+
+# System deps (minimal)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+ && rm -rf /var/lib/apt/lists/*
+
+# Workdir at project root
+WORKDIR /app
+
+# Copy everything (ensure build context is the project root that contains blockchain_backend/)
+COPY . /app
+
+# Ensure Python can import from /app
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+ENV FLASK_DEBUG=0
+
+# Install deps
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install --upgrade pip \
+ && if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+
+EXPOSE 5000
+
+# Run the package entrypoint
+CMD ["python", "-u", "-m", "blockchain_backend.app"]

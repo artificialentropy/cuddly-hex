@@ -1,0 +1,122 @@
+services:
+  db:
+    image: postgres:15
+    container_name: drf_db
+    restart: always
+    environment:
+      POSTGRES_DB: drfindex
+      POSTGRES_USER: drfuser
+      POSTGRES_PASSWORD: drfpass
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} -h 127.0.0.1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  api:
+    build:
+      context: ./api_backend
+      dockerfile: Dockerfile
+    container_name: drf_api
+    restart: always
+    depends_on:
+      - db
+    environment:
+      - PYTHONPATH=/app
+      - DATABASE_URL=postgres://drfuser:drfpass@db:5432/drfindex
+      - DJANGO_SETTINGS_MODULE=app_blockchain.settings
+    ports:
+      - "8000:8000"
+    volumes:
+      # hot-reload: mount only the Django project folder that contains manage.py
+      - ./api_backend:/app
+  node0:
+    build:
+      context: .
+      dockerfile: Dockerfile_blch
+    container_name: node0
+    environment:
+      - PYTHONPATH=/app
+      - SELF_BASE=http://node0:5000
+      - PEER=False
+      - ROOT_HOST=node0
+      - ROOT_PORT=5000
+      - FLASK_DEBUG=0
+    ports:
+      - "5000:5000"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'curl -sf http://127.0.0.1:5000/health | python -c "import sys,json;print(''OK'' if json.load(sys.stdin).get(''ready'') else ''FAIL'')" | grep -q OK',
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  node1:
+    build:
+      context: .
+      dockerfile: Dockerfile_blch
+    container_name: node1
+    environment:
+      - PYTHONPATH=/app
+      - SELF_BASE=http://node1:5000
+      - PEER=True
+      - ROOT_HOST=node0
+      - ROOT_PORT=5000
+      - FLASK_DEBUG=0
+    ports:
+      - "5001:5000"
+    depends_on:
+      node0:
+        condition: service_healthy
+
+  node2:
+    build:
+      context: .
+      dockerfile: Dockerfile_blch
+    container_name: node2
+    environment:
+      - PYTHONPATH=/app
+      - SELF_BASE=http://node2:5000
+      - PEER=True
+      - ROOT_HOST=node0
+      - ROOT_PORT=5000
+      - FLASK_DEBUG=0
+    ports:
+      - "5002:5000"
+    depends_on:
+      node0:
+        condition: service_healthy
+
+  node3:
+    build:
+      context: .
+      dockerfile: Dockerfile_blch
+    container_name: node3
+    environment:
+      - PYTHONPATH=/app
+      - SELF_BASE=http://node3:5000
+      - PEER=True
+      - ROOT_HOST=node0
+      - ROOT_PORT=5000
+      - FLASK_DEBUG=0
+    ports:
+      - "5003:5000"
+    depends_on:
+      node0:
+        condition: service_healthy
+
+volumes:
+  db_data:
