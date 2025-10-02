@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 docker compose build .
 docker compose up
 
@@ -17,3 +18,6 @@ Note : localhost:5001 , 5002 , and 5003 are synced nodes.
 
 visit below app urls : (WIP)
 localhost:8000/api/
+=======
+docker exec -it a62aff25a4bb python manage.py ingest_chain --base http://host.docker.internal:5000 --save-metadata
+>>>>>>> c56c06d ( Slightly modified 2025)

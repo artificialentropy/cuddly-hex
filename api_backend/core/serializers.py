@@ -1,34 +1,74 @@
 from rest_framework import serializers
-from .models import Wallet, Asset, Transaction
+from .models import (
+    Block,
+    Transaction,
+    TransactionOutput,
+    TransactionInputActivity,
+    Wallet,
+    WalletAddress,
+)
 
-class WalletSerializer(serializers.ModelSerializer):
+
+class TransactionInputSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Wallet
-        fields = "__all__"
+        model = TransactionInputActivity
+        fields = ["address", "amount"]
 
-class AssetSerializer(serializers.ModelSerializer):
-    owner = WalletSerializer(read_only=True)  # nested view for owner
-    owner_id = serializers.PrimaryKeyRelatedField(
-        queryset=Wallet.objects.all(), source="owner", write_only=True
-    )
 
+class TransactionOutputSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Asset
-        fields = "__all__"
+        model = TransactionOutput
+        fields = ["address", "amount"]
+
 
 class TransactionSerializer(serializers.ModelSerializer):
-    sender = WalletSerializer(read_only=True)
-    recipient = WalletSerializer(read_only=True)
-    sender_id = serializers.PrimaryKeyRelatedField(
-        queryset=Wallet.objects.all(), source="sender", write_only=True, required=False
-    )
-    recipient_id = serializers.PrimaryKeyRelatedField(
-        queryset=Wallet.objects.all(), source="recipient", write_only=True, required=False
-    )
-    asset_id = serializers.PrimaryKeyRelatedField(
-        queryset=Asset.objects.all(), source="asset", write_only=True, required=False
-    )
+    inputs = TransactionInputSerializer(many=True, read_only=True)
+    outputs = TransactionOutputSerializer(many=True, read_only=True)
 
     class Meta:
         model = Transaction
-        fields = "__all__"
+        fields = [
+            "tx_id",
+            "block",
+            "input_data",
+            "output_data",
+            "is_reward",
+            "timestamp",
+            "from_address",
+            "inputs",
+            "outputs",
+        ]
+
+
+class BlockSerializer(serializers.ModelSerializer):
+    # default related_name transactions -> nested
+    transactions = TransactionSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Block
+        fields = ["height", "hash", "last_hash", "timestamp", "difficulty", "nonce", "transactions"]
+
+
+class WalletAddressSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WalletAddress
+        fields = ["id", "address", "label", "created_at"]
+
+
+class WalletSerializer(serializers.ModelSerializer):
+    addresses = WalletAddressSerializer(many=True, read_only=True)
+    balance = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Wallet
+        fields = ["id", "name", "created_at", "addresses", "balance"]
+
+    def get_balance(self, obj):
+        # Sum balances of all addresses belonging to this wallet
+        addrs = obj.addresses.values_list("address", flat=True)
+        from django.db.models import Sum
+        # Sum outputs
+        out_sum = TransactionOutput.objects.filter(address__in=addrs).aggregate(s=Sum("amount"))["s"] or 0
+        # Sum inputs (inputs.amount is negative for spends) -> include directly
+        in_sum = TransactionInputActivity.objects.filter(address__in=addrs).aggregate(s=Sum("amount"))["s"] or 0
+        return out_sum + in_sum  # inputs are negative, so this results in net balance

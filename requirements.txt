@@ -4,3 +4,6 @@ requests
 cryptography
 pubnub
 dj-database-url
+djangorestframework
+Django
+gunicorn

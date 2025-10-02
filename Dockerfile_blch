@@ -1,29 +1,16 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
-# System deps (minimal)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
- && rm -rf /var/lib/apt/lists/*
-
-# Workdir at project root
 WORKDIR /app
 
-# Copy everything (ensure build context is the project root that contains blockchain_backend/)
-COPY . /app
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Ensure Python can import from /app
-ENV PYTHONPATH=/app
-ENV PYTHONUNBUFFERED=1
-ENV FLASK_DEBUG=0
+# Copy blockchain backend
+COPY blockchain_backend ./blockchain_backend
 
-# Install deps
-RUN apt-get update && apt-get install -y --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/*
-RUN pip install --upgrade pip \
- && if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-
-
+# Expose internal Flask port
 EXPOSE 5000
 
-# Run the package entrypoint
-CMD ["python", "-u", "-m", "blockchain_backend.app"]
+# Run Gunicorn with 1 worker, 4 threads, 120s timeout
+CMD ["gunicorn", "-b", "0.0.0.0:5000", "blockchain_backend.app:app", "--workers=1", "--threads=4", "--timeout=120"]

@@ -6,3 +6,4 @@ gunicorn
 dj-database-url
 django-cors-headers
 django_filter
+drf-nested-routers
