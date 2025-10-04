@@ -1,5 +1,9 @@
+# core/blockchain.py
+from __future__ import annotations
+
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
+
 from blockchain_backend.core.block import Block as bp
-from blockchain_backend.core.block import script_backend_single_run
 from blockchain_backend.wallet.transaction import Transaction
 from blockchain_backend.wallet.wallet import Wallet
 from blockchain_backend.utils.config import (
@@ -8,62 +12,96 @@ from blockchain_backend.utils.config import (
     MINING_REWARD_ASSET,
 )
 
+
+BlockOrJson = Union[bp, Dict[str, Any]]
+
+
 class Blockchain:
     """
     Blockchain: a public ledger of transactions.
-    Implemented as a list of blocks - data sets of transactions
+    Implemented as a list of blocks (each block holds a list of tx JSONs).
     """
 
-    def __init__(self):
-        self.chain = [bp.genesis()]
+    def __init__(self) -> None:
+        self.chain: List[bp] = [bp.genesis()]
 
-    def add_block(self, data):
-        # data is expected to be a list of tx json-serializable dicts
-        self.chain.append(bp.mine_block(self.chain[-1], data))
+    # -------------------------
+    # Basic operations
+    # -------------------------
+    def add_block(self, data: List[Dict[str, Any]]) -> bp:
+        """
+        Append a mined block containing 'data' (tx json dicts).
+        Returns the new block.
+        """
+        new_block = bp.mine_block(self.chain[-1], data)
+        self.chain.append(new_block)
+        return new_block
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"Blockchain: {self.chain}"
 
-    def replace_chain(self, chain):
-        """
-        Replace the local chain with the incoming one if the following applies:
-          - The incoming chain is longer than the local one.
-          - The incoming chain is formatted properly.
-        """
-        if len(chain) <= len(self.chain):
-            raise Exception("Cannot replace. The incoming chain must be longer.")
-
-        try:
-            Blockchain.is_valid_chain(chain)
-        except Exception as e:
-            raise Exception(f"Cannot replace. The incoming chain is invalid: {e}")
-
-        self.chain = chain
-
-    def to_json(self):
-        """
-        Serialize the blockchain into a list of blocks.
-        """
-        return list(map(lambda block: block.to_json(), self.chain))
+    # -------------------------
+    # Serialization
+    # -------------------------
+    def to_json(self) -> List[Dict[str, Any]]:
+        """Serialize the blockchain into a list of block dicts."""
+        return [block.to_json() for block in self.chain]
 
     @staticmethod
-    def from_json(chain_json):
+    def from_json(chain_json: Sequence[Dict[str, Any]]) -> "Blockchain":
         """
         Deserialize a list of serialized blocks into a Blockchain instance.
         The result will contain a chain list of Block instances.
         """
-        blockchain = Blockchain()
-        blockchain.chain = list(map(lambda block_json: bp.from_json(block_json), chain_json))
-        return blockchain
+        bc = Blockchain()
+        bc.chain = [bp.from_json(bj) for bj in chain_json]
+        return bc
 
+    # -------------------------
+    # Chain replacement
+    # -------------------------
+    def replace_chain(self, incoming: Sequence[BlockOrJson]) -> None:
+        """
+        Replace the local chain with the incoming one if the following applies:
+          - The incoming chain is longer than the local one.
+          - The incoming chain is formatted properly.
+        Accepts a sequence of Block objects or block-json dicts.
+        """
+        # Normalize incoming to Block instances
+        new_chain: List[bp] = []
+        for item in incoming:
+            if isinstance(item, bp):
+                new_chain.append(item)
+            elif isinstance(item, dict):
+                new_chain.append(bp.from_json(item))
+            else:
+                raise Exception(f"Cannot replace. Unsupported block type: {type(item)}")
+
+        if len(new_chain) <= len(self.chain):
+            raise Exception("Cannot replace. The incoming chain must be longer.")
+
+        try:
+            Blockchain.is_valid_chain(new_chain)
+        except Exception as e:
+            raise Exception(f"Cannot replace. The incoming chain is invalid: {e}")
+
+        self.chain = new_chain
+
+    # -------------------------
+    # Validation
+    # -------------------------
     @staticmethod
-    def is_valid_chain(chain):
+    def is_valid_chain(chain: Sequence[bp]) -> None:
         """
         Validate the incoming chain.
-        Enforce the following rules of the blockchain:
+        Enforce the following rules:
           - the chain must start with the genesis block
           - blocks must be formatted correctly
+          - transaction-level rules hold across the whole chain
         """
+        if not chain:
+            raise Exception("Empty chain is invalid")
+
         if chain[0] != bp.genesis():
             raise Exception("The genesis block must be valid")
 
@@ -75,134 +113,141 @@ class Blockchain:
         Blockchain.is_valid_transaction_chain(chain)
 
     @staticmethod
-    def _normalize_output_entry(entry):
+    def _normalize_output_entry(entry: Any) -> Dict[str, int]:
         """
         Normalize tx output entry into a currency->int map.
-        Accepts legacy numeric outputs (treat as MINING_REWARD_ASSET or default currency)
-        or nested dicts {currency: amount}.
+        Accepts:
+          - dict {currency: amount, ...}
+          - numeric legacy output (treated as MINING_REWARD_ASSET)
         """
         if isinstance(entry, dict):
-            # assume {currency: amount, ...}
-            return {str(k): int(v) for k, v in entry.items()}
-        else:
-            # numeric legacy output — interpret as MINING_REWARD_ASSET
-            try:
-                return {MINING_REWARD_ASSET: int(entry)}
-            except Exception:
-                return {}
+            out: Dict[str, int] = {}
+            for k, v in entry.items():
+                try:
+                    out[str(k)] = int(v)
+                except Exception:
+                    continue
+            return out
+        # legacy scalar → assume default asset
+        try:
+            return {MINING_REWARD_ASSET: int(entry)}
+        except Exception:
+            return {}
 
     @staticmethod
-    def is_valid_transaction_chain(chain):
+    def is_valid_transaction_chain(chain: Sequence[bp]) -> None:
         """
         Enforce rules:
           - Each transaction must only appear once in the chain.
           - There can only be one mining reward per block.
           - Each transaction must be valid (signature + conservation).
-          - For normal txs, the historic balance check is done using the input snapshot:
-              - prefer input["balances"][currency] if present
-              - otherwise fall back to legacy input["amount"] and legacy flat outputs
+          - Historic balance snapshot must match inputs:
+              * Prefer input["balances"][currency] when provided (multi-asset).
+              * Otherwise legacy input["amount"] for default asset.
         """
-        transaction_ids = set()
+        seen_tx_ids = set()
 
-        for i in range(len(chain)):
-            block = chain[i]
+        for i, block in enumerate(chain):
             has_mining_reward = False
 
-            for transaction_json in block.data:
-                transaction = Transaction.from_json(transaction_json)
+            for tx_json in block.data:
+                transaction = Transaction.from_json(tx_json)
 
-                if transaction.id in transaction_ids:
+                if transaction.id in seen_tx_ids:
                     raise Exception(f"Transaction {transaction.id} is not unique")
+                seen_tx_ids.add(transaction.id)
 
-                transaction_ids.add(transaction.id)
-
-                # Reward tx check
+                # Reward transaction validation
                 if transaction.input == MINING_REWARD_INPUT:
                     if has_mining_reward:
                         raise Exception(
                             "There can only be one mining reward per block. "
-                            f"Check block with hash: {getattr(block, 'hash', None)}"
+                            f"Block hash: {getattr(block, 'hash', None)}"
                         )
-                    # Verify reward amount + asset (be permissive about output shape)
+
                     outputs = transaction.output or {}
-                    # Expect exactly one recipient with MINING_REWARD_ASSET == MINING_REWARD
-                    reward_found = False
-                    for addr, out_entry in outputs.items():
+                    # Expect at least one recipient where MINING_REWARD_ASSET == MINING_REWARD
+                    reward_ok = False
+                    for _addr, out_entry in outputs.items():
                         entry_map = Blockchain._normalize_output_entry(out_entry)
                         if entry_map.get(MINING_REWARD_ASSET, 0) == int(MINING_REWARD):
-                            reward_found = True
+                            reward_ok = True
                             break
-                    if not reward_found:
+                    if not reward_ok:
                         raise Exception(
-                            f"Invalid mining reward in block {getattr(block, 'hash', None)}; expected {MINING_REWARD} {MINING_REWARD_ASSET}"
+                            f"Invalid mining reward in block {getattr(block, 'hash', None)}; "
+                            f"expected {MINING_REWARD} {MINING_REWARD_ASSET}"
                         )
+
                     has_mining_reward = True
-                    continue
+                    continue  # reward tx doesn't need balance snapshot check
 
-                # For non-reward txs: compute historic balance and compare to input snapshot
-                historic_blockchain = Blockchain()
-                historic_blockchain.chain = chain[0:i]
+                # Non-reward transactions: validate against historic snapshot
+                historic = Blockchain()
+                historic.chain = list(chain[0:i])  # blocks strictly before current block
 
-                # Determine which currency to check:
-                # If tx.input contains a balances dict, validate for each currency present there.
-                # Otherwise maintain legacy behavior: use input["amount"] and flat outputs.
                 input_snapshot = transaction.input or {}
+                addr = input_snapshot.get("address")
+
                 if isinstance(input_snapshot, dict) and "balances" in input_snapshot:
-                    # For each currency in input snapshot, compute historic balance and compare
-                    for currency_id, snapshot_amount in input_snapshot["balances"].items():
-                        hb = Wallet.calculate_balance(historic_blockchain, transaction.input["address"], currency=currency_id)
+                    balances = input_snapshot.get("balances") or {}
+                    if not isinstance(balances, dict):
+                        raise Exception(f"Transaction {transaction.id} has invalid balances snapshot")
+                    for currency_id, snapshot_amount in balances.items():
+                        hb = Wallet.calculate_balance(historic, addr, currency=str(currency_id))
                         if int(hb) != int(snapshot_amount):
                             raise Exception(
-                                f"Transaction {transaction.id} has invalid input snapshot for currency {currency_id}: historic {hb} != input snapshot {snapshot_amount}"
+                                f"Transaction {transaction.id} invalid snapshot for {currency_id}: "
+                                f"historic {hb} != input {snapshot_amount}"
                             )
                 else:
-                    # Legacy path: expect input["amount"] and flat outputs
-                    legacy_input_amount = input_snapshot.get("amount")
-                    if legacy_input_amount is None:
+                    # Legacy path: input["amount"] for default asset
+                    if "amount" not in input_snapshot:
                         raise Exception(f"Transaction {transaction.id} missing input snapshot or amount")
-                    # compute historic balance for default/mining currency
-                    hb = Wallet.calculate_balance(historic_blockchain, transaction.input["address"])
-                    if int(hb) != int(legacy_input_amount):
+                    hb = Wallet.calculate_balance(historic, addr)
+                    if int(hb) != int(input_snapshot["amount"]):
                         raise Exception(
-                            f"Transaction {transaction.id} has an invalid input amount (legacy): historic {hb} != input.amount {legacy_input_amount}"
+                            f"Transaction {transaction.id} has an invalid input amount (legacy): "
+                            f"historic {hb} != input.amount {input_snapshot['amount']}"
                         )
 
-                # Validate transaction signature + output conservation using Transaction's own validator
+                # Signature & conservation checks delegated to Transaction
                 Transaction.is_valid_transaction(transaction)
 
-def script_blockchain_init(blockchain, server_start, custom_data=None):
+
+# -------------------------
+# Utility: create initial reward block (optional)
+# -------------------------
+def script_blockchain_init(
+    blockchain: Blockchain,
+    server_start: bool,
+    custom_data: Optional[List[Dict[str, Any]]] = None,
+):
     """
     If server_start is True, create an initial block with a miner reward.
-    The reward transaction is created using config MINING_REWARD and MINING_REWARD_ASSET.
-    This function is backward-compatible with older Transaction.reward_transaction(miner_wallet)
-    signatures by falling back if necessary.
+    The reward transaction uses config MINING_REWARD / MINING_REWARD_ASSET.
+    Backward-compatible with older Transaction.reward_transaction() signatures.
+    Returns (new_block, blockchain) when a block is added, else None.
     """
     if not server_start:
         return None
 
     miner_wallet = Wallet(blockchain)
-
-    # Attach custom_data into metadata if provided
     metadata = {"custom_data": custom_data} if custom_data is not None else None
 
-    # Build reward tx with new signature if available, otherwise fallback to old call
+    # Try new signature; gracefully fall back to older ones
     try:
-        # preferred signature: (miner_wallet, asset=..., amount=..., metadata=...)
         reward_tx = Transaction.reward_transaction(
             miner_wallet,
-            currency=MINING_REWARD_ASSET,  # or MINING_REWARD_ASSET
-            amount=MINING_REWARD,  # or 100, whatever reward you want
-            metadata=metadata
+            currency=MINING_REWARD_ASSET,
+            amount=MINING_REWARD,
+            metadata=metadata,
         )
     except TypeError:
-        # fallback: older signature that possibly only takes (miner_wallet, metadata=None)
         try:
-            reward_tx = Transaction.reward_transaction(miner_wallet, metadata=metadata)
+            reward_tx = Transaction.reward_transaction(miner_wallet, metadata=metadata)  # older
         except TypeError:
-            # last-resort: call simple one-arg variant and ignore metadata
-            reward_tx = Transaction.reward_transaction(miner_wallet)
+            reward_tx = Transaction.reward_transaction(miner_wallet)  # oldest
 
-    # Add the reward tx as the first (genesis-like) block's data
-    blockchain.add_block([reward_tx.to_json()])
-    return blockchain.chain[-1], blockchain
-
+    new_block = blockchain.add_block([reward_tx.to_json()])
+    return new_block, blockchain

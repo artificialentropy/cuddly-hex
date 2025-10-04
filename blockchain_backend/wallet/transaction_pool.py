@@ -1,6 +1,9 @@
+# wallet/transaction_pool.py
 import time
-from typing import Optional, Callable, Dict, List
+from typing import Optional, Callable, Dict, List, Any
+from collections import defaultdict
 
+from blockchain_backend.utils.config import STARTING_BALANCE, MINING_REWARD_INPUT
 from .transaction import Transaction
 
 
@@ -11,16 +14,21 @@ class TransactionPool:
       - Asset transactions (listing, purchase, transfer)
       - Asset locks to prevent double acceptance
       - Optional validation callback to resolve assets
+      - ECONOMIC VALIDATION: chain-aware sufficient-funds checks (prevents double-spend).
     """
 
-    def __init__(self,
-                 resolve_asset_fn: Optional[Callable[[str], object]] = None,
-                 validate_on_set: bool = True):
+    def __init__(
+        self,
+        resolve_asset_fn: Optional[Callable[[str], object]] = None,
+        validate_on_set: bool = True,
+        blockchain=None,
+    ):
         self.transaction_map: Dict[str, Transaction] = {}
-        self.asset_locks: Dict[str, str] = {}   # asset_id -> tx_id
-        self._timestamps: Dict[str, float] = {} # tx_id -> insertion time
+        self.asset_locks: Dict[str, str] = {}    # asset_id -> tx_id
+        self._timestamps: Dict[str, float] = {}  # tx_id -> insertion time
         self.resolve_asset_fn = resolve_asset_fn
         self.validate_on_set = validate_on_set
+        self.blockchain = blockchain  # used for chain-aware balance checks
 
     # ---------------------------
     # Core mutators
@@ -28,30 +36,47 @@ class TransactionPool:
     def set_transaction(self, transaction: Transaction) -> None:
         """
         Add (or replace) a transaction in the pool with validation.
-        Raises Exception on invalid tx or asset conflict.
+        Raises Exception on invalid tx, insufficient funds, or asset conflict.
         """
         tx_id = transaction.id
 
-        # If this tx_id already exists, remove it first to release any old locks.
+        # Replace-on-set: release any old locks for same id first
         if tx_id in self.transaction_map:
             self.remove_transaction(tx_id)
 
-        # 1) Validate first (pure)
+        # 1) Structural/signature validation (pure)
         if self.validate_on_set:
             try:
-                Transaction.is_valid_transaction(transaction, resolve_asset_fn=self.resolve_asset_fn)
+                Transaction.is_valid_transaction(
+                    transaction, resolve_asset_fn=self.resolve_asset_fn
+                )
             except Exception as e:
                 raise Exception(f"Rejected transaction {tx_id}: validation failed: {e}")
 
-        # 2) Asset lock checks (collect, verify, then reserve atomically)
-        asset_infos = []
+        # 1.5) Economic validation: enforce on-chain funds including pending pool txs
+        if self.blockchain is not None:
+            ledger = self._build_ledger_from_chain(self.blockchain)
+
+            # Reserve existing pool txs FIFO
+            pending = sorted(
+                self.transaction_map.values(),
+                key=lambda t: self._timestamps.get(t.id, 0),
+            )
+            for p in pending:
+                self._apply_tx_to_ledger(p.to_json(), ledger)
+
+            # Enforce & reserve the new tx
+            self._enforce_sufficient_funds(transaction.to_json(), ledger)
+            self._apply_tx_to_ledger(transaction.to_json(), ledger)
+
+        # 2) Asset locks (collect, verify, then reserve atomically)
+        asset_infos: List[dict] = []
         meta = getattr(transaction, "metadata", {}) or {}
         for key in ("asset_purchase", "asset_listing", "asset_transfer"):
             v = meta.get(key)
             if v:
                 asset_infos.extend(v if isinstance(v, list) else [v])
 
-        # Gather all asset_ids referenced by this transaction
         to_lock: Dict[str, dict] = {}
         for info in asset_infos:
             aid = info.get("asset_id")
@@ -59,21 +84,22 @@ class TransactionPool:
                 continue
             to_lock[aid] = info
 
-        # Verify conflicts & ownership first
+        # Verify conflicts & (optionally) ownership
         for aid, info in to_lock.items():
             existing = self.asset_locks.get(aid)
             if existing and existing != tx_id:
                 raise Exception(f"Asset {aid} already reserved by tx {existing} in the pool")
 
-            # Optional owner verification (only when 'from' is provided)
             if self.resolve_asset_fn and "from" in info:
                 asset_obj = self.resolve_asset_fn(aid)
                 if not asset_obj:
                     raise Exception(f"Asset {aid} not found for tx {tx_id}")
                 if asset_obj.owner != info["from"]:
-                    raise Exception(f"Asset owner mismatch: expected {info['from']}, got {asset_obj.owner}")
+                    raise Exception(
+                        f"Asset owner mismatch: expected {info['from']}, got {asset_obj.owner}"
+                    )
 
-        # Reserve locks atomically
+        # Reserve locks
         for aid in to_lock.keys():
             self.asset_locks[aid] = tx_id
 
@@ -104,7 +130,7 @@ class TransactionPool:
 
     def get_transactions_by_asset(self, asset_id: str) -> List[Transaction]:
         """Return pool transactions referencing a given asset_id."""
-        res = []
+        res: List[Transaction] = []
         for tx in self.transaction_map.values():
             meta = getattr(tx, "metadata", {}) or {}
             for key in ("asset_purchase", "asset_listing", "asset_transfer"):
@@ -119,9 +145,7 @@ class TransactionPool:
         return res
 
     def remove_transaction(self, tx_id: str) -> None:
-        """
-        Remove transaction and release any asset locks it held.
-        """
+        """Remove a transaction and release any asset locks it held."""
         tx = self.transaction_map.pop(tx_id, None)
         self._timestamps.pop(tx_id, None)
         if not tx:
@@ -139,12 +163,10 @@ class TransactionPool:
                     del self.asset_locks[aid]
 
     def clear_blockchain_transactions(self, blockchain) -> None:
-        """
-        Remove transactions already recorded in the blockchain.
-        """
+        """Remove transactions already recorded in the blockchain."""
         for block in getattr(blockchain, "chain", []):
-            for tx_json in getattr(block, "data", []):
-                txid = getattr(tx_json, "get", lambda k, d=None: None)("id")
+            for tx_json in getattr(block, "data", []) or []:
+                txid = tx_json.get("id") if isinstance(tx_json, dict) else None
                 if txid:
                     self.remove_transaction(txid)
 
@@ -161,17 +183,12 @@ class TransactionPool:
         return {"transactions": self.transaction_data()}
 
     def get_transactions_for_mining(self, limit: Optional[int] = None) -> List[Transaction]:
-        """
-        Return transactions for block mining.
-        - Sorted by insertion timestamp (FIFO)
-        """
+        """Return transactions for block mining, FIFO."""
         items = sorted(self.transaction_map.values(), key=lambda t: self._timestamps.get(t.id, 0))
         return items[:limit] if limit else items
 
     def prune_expired(self, ttl_seconds: int = 3600) -> None:
-        """
-        Remove transactions older than `ttl_seconds` and release any asset locks.
-        """
+        """Remove transactions older than `ttl_seconds` and release any asset locks."""
         now = time.time()
         expired = [txid for txid, ts in self._timestamps.items() if now - ts > ttl_seconds]
         for txid in expired:
@@ -185,3 +202,137 @@ class TransactionPool:
 
     def __contains__(self, tx_id: str) -> bool:
         return tx_id in self.transaction_map
+
+    # ===========================
+    # Internal ledger utilities
+    # ===========================
+    @staticmethod
+    def _ensure_seed(ledger, address: str) -> None:
+        """Seed a newly seen address with configured starting balance (COIN)."""
+        if "COIN" not in ledger[address]:
+            ledger[address]["COIN"] = int(STARTING_BALANCE)
+
+    @classmethod
+    def _build_ledger_from_chain(cls, blockchain) -> Dict[str, Dict[str, int]]:
+        """
+        Build a balance sheet from the current chain.
+        Per address, per currency. Seeds with STARTING_BALANCE on first sight.
+        """
+        ledger: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+
+        chain = getattr(blockchain, "chain", None) or []
+        # skip genesis (index 0)
+        for block in chain[1:]:
+            for tx in getattr(block, "data", []) or []:
+                tx_in: Dict[str, Any] = tx.get("input", {}) or {}
+                tx_out: Dict[str, Dict[str, int]] = tx.get("output", {}) or {}
+
+                # Reward (mint): credit outputs directly
+                if tx_in == MINING_REWARD_INPUT:
+                    for out_addr, cm in (tx_out or {}).items():
+                        cls._ensure_seed(ledger, out_addr)
+                        for cur, amt in (cm or {}).items():
+                            ledger[out_addr][cur] += int(amt)
+                    continue
+
+                sender = tx_in.get("address")
+                if sender:
+                    cls._ensure_seed(ledger, sender)
+
+                # Credits to recipients (excluding sender's change)
+                for out_addr, cm in (tx_out or {}).items():
+                    if out_addr == sender:
+                        continue
+                    cls._ensure_seed(ledger, out_addr)
+                    for cur, amt in (cm or {}).items():
+                        ledger[out_addr][cur] += int(amt)
+
+                # Debits for sender: sum amounts to others
+                if sender:
+                    sent = defaultdict(int)
+                    for out_addr, cm in (tx_out or {}).items():
+                        if out_addr == sender:
+                            continue
+                        for cur, amt in (cm or {}).items():
+                            sent[cur] += int(amt)
+                    for cur, amt in sent.items():
+                        ledger[sender][cur] -= int(amt)
+
+        return ledger
+
+    @classmethod
+    def _enforce_sufficient_funds(cls, tx: Dict[str, Any], ledger: Dict[str, Dict[str, int]]) -> None:
+        """
+        Raise if the sender doesn't have enough on-chain balance for the amounts
+        sent to OTHER addresses (per currency). Zero-sum and reward txs are allowed.
+        """
+        tx_in: Dict[str, Any] = tx.get("input", {}) or {}
+        tx_out: Dict[str, Dict[str, int]] = tx.get("output", {}) or {}
+
+        # Reward mints are fine
+        if tx_in == MINING_REWARD_INPUT:
+            return
+
+        sender = tx_in.get("address")
+        if not sender:
+            return  # nothing to enforce if there's no economic sender
+
+        # Zero-sum metadata tx (e.g., listings)
+        has_any_amount = any(
+            int(v) for addr_map in (tx_out or {}).values() for v in (addr_map or {}).values()
+        )
+        if not has_any_amount:
+            return
+
+        # Ensure sender exists in ledger
+        cls._ensure_seed(ledger, sender)
+
+        # Compute per-currency amounts sent to others
+        sent = defaultdict(int)
+        for out_addr, cm in (tx_out or {}).items():
+            if out_addr == sender:
+                continue
+            for cur, amt in (cm or {}).items():
+                sent[cur] += int(amt)
+
+        # Enforce per-currency sufficient balance
+        for cur, amt in sent.items():
+            if ledger[sender][cur] < amt:
+                raise Exception(
+                    f"Insufficient on-chain funds for {cur}: have={ledger[sender][cur]} need={amt}"
+                )
+
+    @classmethod
+    def _apply_tx_to_ledger(cls, tx: Dict[str, Any], ledger: Dict[str, Dict[str, int]]) -> None:
+        """Mutate ledger by applying the tx effects (reservation/apply)."""
+        tx_in: Dict[str, Any] = tx.get("input", {}) or {}
+        tx_out: Dict[str, Dict[str, int]] = tx.get("output", {}) or {}
+
+        if tx_in == MINING_REWARD_INPUT:
+            for out_addr, cm in (tx_out or {}).items():
+                cls._ensure_seed(ledger, out_addr)
+                for cur, amt in (cm or {}).items():
+                    ledger[out_addr][cur] += int(amt)
+            return
+
+        sender = tx_in.get("address")
+
+        # Credits to recipients (excluding sender's change)
+        for out_addr, cm in (tx_out or {}).items():
+            if out_addr == sender:
+                continue
+            cls._ensure_seed(ledger, out_addr)
+            for cur, amt in (cm or {}).items():
+                ledger[out_addr][cur] += int(amt)
+
+        # Debits for sender: sum amounts to others
+        if sender:
+            cls._ensure_seed(ledger, sender)
+            sent = defaultdict(int)
+            for out_addr, cm in (tx_out or {}).items():
+                if out_addr == sender:
+                    continue
+                for cur, amt in (cm or {}).items():
+                    sent[cur] += int(amt)
+            for cur, amt in sent.items():
+                ledger[sender][cur] -= int(amt)

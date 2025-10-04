@@ -1,7 +1,8 @@
+# wallet/transaction.py
 import time
 import uuid
-from copy import deepcopy
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
+
 from blockchain_backend.wallet.wallet import Wallet
 from blockchain_backend.utils.config import MINING_REWARD_INPUT
 
@@ -36,35 +37,49 @@ class Transaction:
       - For each currency c in input["balances"], sum(output[*][c]) == input["balances"][c].
     """
 
-    def __init__(self, sender_wallet: Wallet = None, recipient: Optional[str] = None,
-                 amount_map: Optional[Dict[str, int]] = None, asset_ids=None,
-                 id: Optional[str] = None, output: Optional[Dict[str, Dict[str, int]]] = None,
-                 input: Optional[Dict[str, Any]] = None, metadata: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self,
+        sender_wallet: Optional[Wallet] = None,
+        recipient: Optional[str] = None,
+        amount_map: Optional[Dict[str, int]] = None,
+        asset_ids: Optional[List[str]] = None,
+        id: Optional[str] = None,
+        output: Optional[Dict[str, Dict[str, int]]] = None,
+        input: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ):
         self.id = id or str(uuid.uuid4())[:8]
-        self.metadata = metadata or {}
-        self.output = output or {}
-        self.input = input or {}
+        self.metadata: Dict[str, Any] = dict(metadata or {})
+        self.output: Dict[str, Dict[str, int]] = dict(output or {})
+        self.input: Dict[str, Any] = dict(input or {})
 
+        # If constructed with a sender wallet, synthesize outputs + input signature
         if sender_wallet:
-            self._create_transaction(sender_wallet, recipient, amount_map, asset_ids)
+            self._create_transaction(sender_wallet, recipient, amount_map or {}, asset_ids or [])
 
     # ---------------------------
     # Core transaction creation
     # ---------------------------
-    def _create_transaction(self, sender_wallet: Wallet, recipient: str,
-                            amount_map: Optional[Dict[str, int]], asset_ids):
+    def _create_transaction(
+        self,
+        sender_wallet: Wallet,
+        recipient: Optional[str],
+        amount_map: Dict[str, int],
+        asset_ids: List[str]
+    ):
         """
-        Creates currency + optional asset transfer outputs and input signature.
+        Creates currency outputs and input signature.
 
         amount_map: dict[currency] = amount to send to recipient
-        Produces outputs:
-          - recipient gets amount_map
-          - sender gets change per currency: sender_balance[c] - amount_map[c]
+        Outputs:
+          - recipient gets {spent currencies}
+          - sender gets change per spent currency: sender_balance[c] - amount_map[c] (can be zero)
         """
-        amount_map = amount_map or {}
-        asset_ids = asset_ids or []
+        if not recipient and amount_map:
+            raise Exception("Recipient is required when sending currency")
 
-        # --- Validate funds & normalize ---
+        # --- Validate funds & normalize (only spent currencies) ---
+        spent_map: Dict[str, int] = {}
         for currency, amt in amount_map.items():
             amt = int(amt)
             if amt < 0:
@@ -74,42 +89,36 @@ class Transaction:
                     f"Insufficient funds for {currency}: "
                     f"{amt} > {sender_wallet.balances.get(currency, 0)}"
                 )
+            if amt > 0:
+                spent_map[currency] = amt
 
-        # --- Prepare outputs (ONLY spent currencies) ---
-        self.output = {}
+        # Build outputs only for spent currencies
+        outputs: Dict[str, Dict[str, int]] = {}
 
-        # recipient gets requested transfer for the spent currencies
-        if amount_map:
-            self.output[recipient] = {c: int(v) for c, v in amount_map.items() if v > 0}
+        if spent_map:
+            outputs[recipient] = dict(spent_map)
 
-        # change back to sender for the spent currencies
+        # change back to sender for the spent currencies (include zeros to keep balances deterministic)
         change: Dict[str, int] = {}
-        for currency, amt in amount_map.items():
+        for currency, amt in spent_map.items():
             sender_amt = int(sender_wallet.balances.get(currency, 0))
             remaining = sender_amt - int(amt)
             if remaining < 0:
-                # Should never happen due to the earlier check
                 raise Exception(f"Internal error: negative change for {currency}")
             change[currency] = remaining
-
         if change:
-            # Keep only spent currencies in sender's change map
-            self.output[sender_wallet.address] = change
+            outputs[sender_wallet.address] = change
 
-        # --- Asset metadata (ownership transfer intent) ---
-        if asset_ids:
-            asset_info = [
-                {"asset_id": aid, "from": sender_wallet.address, "to": recipient}
-                for aid in asset_ids
-            ]
-            self.metadata["asset_purchase"] = asset_info
+        self.output = outputs
 
-        # --- Create input ---
-        # input["balances"] ONLY includes the currencies being spent (pre-spend values)
-        spent_snapshot = {c: int(sender_wallet.balances[c]) for c in amount_map}
+        # NOTE: We intentionally do NOT write asset metadata here.
+        # Asset metadata is provided by higher-level helpers (purchase/list/transfer) to avoid conflicts.
+
+        # --- Create input with snapshot for spent currencies only ---
+        spent_snapshot = {c: int(sender_wallet.balances[c]) for c in spent_map}
         self.input = {
             "timestamp": time.time_ns(),
-            "balances": spent_snapshot,
+            "balances": spent_snapshot,     # ONLY currencies being spent
             "address": sender_wallet.address,
             "public_key": sender_wallet.public_key,
             "signature": sender_wallet.sign(self.output),
@@ -128,8 +137,7 @@ class Transaction:
         meta = dict(metadata or {})
         meta["asset_listing"] = {"asset_id": asset.asset_id, "price": int(price), "currency": currency}
 
-        # Zero output and zero input balances; still sign to authenticate the listing
-        output = {}
+        output: Dict[str, Dict[str, int]] = {}
         return Transaction(
             output=output,
             input={
@@ -152,7 +160,7 @@ class Transaction:
         meta = dict(metadata or {})
         meta["asset_listing_cancel"] = {"asset_id": asset.asset_id}
 
-        output = {}
+        output: Dict[str, Dict[str, int]] = {}
         return Transaction(
             output=output,
             input={
@@ -188,17 +196,18 @@ class Transaction:
             sender_wallet=buyer_wallet,
             recipient=seller_address,
             amount_map={currency: price},
-            asset_ids=[asset.asset_id]
         )
 
-        tx.metadata = dict(metadata or {})
-        tx.metadata["asset_purchase"] = {
+        # Attach canonical purchase metadata (single dict)
+        meta = dict(metadata or {})
+        meta["asset_purchase"] = {
             "asset_id": asset.asset_id,
             "price": price,
             "currency": currency,
             "from": seller_address,
             "to": buyer_wallet.address
         }
+        tx.metadata = meta
 
         # Side-effect: update asset ownership (domain action outside the ledger)
         asset.owner = buyer_wallet.address
@@ -212,7 +221,7 @@ class Transaction:
         if asset.owner != sender_wallet.address:
             raise Exception("Only the current owner can transfer this asset")
 
-        output = {}  # zero-sum; we only record metadata + signature
+        output: Dict[str, Dict[str, int]] = {}  # zero-sum; we only record metadata + signature
         tx = Transaction(
             output=output,
             input={
@@ -278,11 +287,9 @@ class Transaction:
 
         # Rewards: allow minting of new currency; must match the special input type
         if tx_input == MINING_REWARD_INPUT:
-            # Basic sanity checks for rewards
             if Transaction._has_negative_amounts(tx_output):
                 raise Exception("Negative amount in reward output")
-            # Optional: ensure exactly one address and one currency in rewards
-            # (Keep flexible if your chain allows multiple.)
+            # keep reward flexible (multiple currencies/addresses if you want later)
             return
 
         # Standard tx validation
@@ -303,10 +310,7 @@ class Transaction:
 
         # Zero-sum metadata transactions are allowed (e.g., listings, transfers without currency)
         if not input_balances:
-            # Ensure outputs carry no accidental currency movements
-            has_any_amount = any(
-                (int(v) for addr_map in tx_output.values() for v in addr_map.values())
-            )
+            has_any_amount = any(int(v) for addr_map in tx_output.values() for v in addr_map.values())
             if has_any_amount:
                 raise Exception("Zero-sum transaction has non-zero outputs")
         else:
@@ -326,23 +330,28 @@ class Transaction:
 
         # --- Asset validation (optional hook) ---
         if transaction.metadata:
-            # Handle both list and single dict under "asset_purchase"
             if "asset_purchase" in transaction.metadata:
-                info_list = transaction.metadata["asset_purchase"]
-                if not isinstance(info_list, list):
-                    info_list = [info_list]
-
-                for info in info_list:
+                info = transaction.metadata["asset_purchase"]
+                if isinstance(info, list):
+                    infos = info
+                else:
+                    infos = [info]
+                for it in infos:
+                    for key in ("asset_id", "from", "to"):
+                        if key not in it:
+                            raise Exception("Invalid asset_purchase metadata")
                     if resolve_asset_fn:
-                        asset = resolve_asset_fn(info["asset_id"])
+                        asset = resolve_asset_fn(it["asset_id"])
                         if not asset:
                             raise Exception("Asset not found")
-                        if asset.owner != info.get("from"):
+                        if asset.owner != it.get("from"):
                             raise Exception("Asset owner mismatch during validation")
 
             if "asset_transfer" in transaction.metadata:
-                # For zero-sum ownership move, you can optionally verify current owner via resolve_asset_fn
                 info = transaction.metadata["asset_transfer"]
+                for key in ("asset_id", "from", "to"):
+                    if key not in info:
+                        raise Exception("Invalid asset_transfer metadata")
                 if resolve_asset_fn:
                     asset = resolve_asset_fn(info["asset_id"])
                     if not asset:

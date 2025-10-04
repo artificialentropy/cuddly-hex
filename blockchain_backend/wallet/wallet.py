@@ -1,8 +1,6 @@
+# wallet/wallet.py
 import json
 import uuid
-import time
-from copy import deepcopy
-
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import (
@@ -11,8 +9,7 @@ from cryptography.hazmat.primitives.asymmetric.utils import (
 )
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.exceptions import InvalidSignature
-
-from blockchain_backend.utils.config import STARTING_BALANCE, MINING_REWARD_INPUT
+from blockchain_backend.utils.config import STARTING_BALANCE
 
 
 class Wallet:
@@ -105,6 +102,11 @@ class Wallet:
         Compute multi-currency balances for an address.
         - currency=None -> returns dict {currency: balance}
         - currency="COIN" -> returns integer
+
+        Rules:
+          - When the address is the TX SENDER, set balances for currencies present
+            in the sender's change map (this represents post-spend state for those currencies).
+          - When the address is a RECIPIENT, add the received amounts to the running balance.
         """
         default_currency = "COIN"
         balances = {default_currency: STARTING_BALANCE}
@@ -113,24 +115,24 @@ class Wallet:
             return balances if currency is None else balances.get(currency, 0)
 
         for block in blockchain.chain:
-            for tx in block.data:
-                try:
-                    tx_input = tx["input"]
-                    tx_output = tx["output"]
-                except Exception:
+            for tx in getattr(block, "data", []) or []:
+                if not isinstance(tx, dict):
                     continue
+
+                tx_input = tx.get("input", {})
+                tx_output = tx.get("output", {})
 
                 tx_from = tx_input.get("address") if isinstance(tx_input, dict) else None
 
-                if tx_from == address:
-                    # Wallet spent: update currencies in output
-                    if address in tx_output:
-                        for c, v in tx_output[address].items():
-                            balances[c] = v
-                elif address in tx_output:
-                    # Wallet received funds
+                # If wallet is the sender, set balances for currencies present in its change entry
+                if tx_from == address and address in tx_output:
                     for c, v in tx_output[address].items():
-                        balances[c] = balances.get(c, 0) + v
+                        balances[c] = int(v)
+
+                # If wallet is a recipient, add amounts
+                if address in tx_output and tx_from != address:
+                    for c, v in tx_output[address].items():
+                        balances[c] = balances.get(c, 0) + int(v)
 
         if currency is not None:
             return balances.get(currency, 0)
@@ -144,37 +146,14 @@ class Wallet:
         :param amount_map: Dict of {currency: amount} to send
         :param asset_ids: List of asset IDs to transfer
         """
-        amount_map = amount_map or {}
-        asset_ids = asset_ids or []
+        amount_map = dict(amount_map or {})
+        asset_ids = list(asset_ids or [])
 
-        # Validate funds
+        # Validate funds quickly here (Transaction will also re-validate)
         for c, amt in amount_map.items():
-            if self.balances.get(c, 0) < amt:
+            if self.balances.get(c, 0) < int(amt):
                 raise Exception(f"Insufficient funds for {c}: {amt} > {self.balances.get(c,0)}")
 
-        # Prepare outputs
-        outputs = {}
-        if amount_map:
-            outputs[recipient] = deepcopy(amount_map)
-
-        # Add change back to self
-        change = {}
-        for c, amt in self.balances.items():
-            sent = amount_map.get(c, 0)
-            remaining = amt - sent
-            if remaining > 0:
-                change[c] = remaining
-        if change:
-            outputs[self.address] = change
-
-        # Metadata for assets
-        metadata = None
-        if asset_ids:
-            asset_info = [{"asset_id": aid, "from": self.address, "to": recipient} for aid in asset_ids]
-            metadata = {"asset_purchase": asset_info}
-
-        # Create signed transaction
-        from .transaction import Transaction  # Import locally to avoid circular import
-        tx = Transaction(sender_wallet=self, recipient=recipient, amount_map=amount_map, asset_ids=asset_ids)
-
-        return tx
+        # Create signed transaction (includes correct input snapshot + outputs)
+        from .transaction import Transaction  # avoid circular import at module load
+        return Transaction(sender_wallet=self, recipient=recipient, amount_map=amount_map, asset_ids=asset_ids)

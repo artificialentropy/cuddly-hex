@@ -31,92 +31,122 @@ services:
     depends_on:
       - db
     environment:
-      - PYTHONPATH=/app
-      - DATABASE_URL=postgres://drfuser:drfpass@db:5432/drfindex
-      - DJANGO_SETTINGS_MODULE=app_blockchain.settings
+      PYTHONPATH: /app
+      DATABASE_URL: postgres://drfuser:drfpass@db:5432/drfindex
+      DJANGO_SETTINGS_MODULE: app_blockchain.settings
     ports:
       - "8000:8000"
     volumes:
-      # hot-reload: mount only the Django project folder that contains manage.py
-      - ./api_backend:/app
+      - ./api_backend:/app # hot reload for Django
+
   node0:
     build:
       context: .
       dockerfile: Dockerfile_blch
     container_name: node0
+    restart: always
+    env_file:
+      - .env
     environment:
-      - PYTHONPATH=/app
-      - SELF_BASE=http://node0:5000
-      - PEER=False
-      - ROOT_HOST=node0
-      - ROOT_PORT=5000
-      - FLASK_DEBUG=0
+      PYTHONPATH: /app
+      SELF_BASE: http://node0:5000
+      PEER: "False"
+      ROOT_HOST: node0
+      ROOT_PORT: 5000
+      FLASK_DEBUG: "1"
+      WORKERS: "1" # single worker -> shared in-memory state
+      THREADS: "4"
+      TIMEOUT: "120"
+      PUBNUB_UUID: node0
+      GUNICORN_CMD_ARGS: "--log-level debug --capture-output --access-logfile - --error-logfile -"
     ports:
       - "5000:5000"
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          'curl -sf http://127.0.0.1:5000/health | python -c "import sys,json;print(''OK'' if json.load(sys.stdin).get(''ready'') else ''FAIL'')" | grep -q OK',
+          "curl -sf http://127.0.0.1:5000/health | python - <<'PY'\nimport sys, json\nj=json.load(sys.stdin)\nprint('OK' if j.get('ok') and (j.get('ready') or j.get('height',0)>=1) else 'FAIL')\nPY\n | grep -q OK",
         ]
       interval: 5s
       timeout: 3s
-      retries: 30
-      start_period: 5s
+      retries: 50
+      start_period: 15s
 
   node1:
     build:
       context: .
       dockerfile: Dockerfile_blch
     container_name: node1
+    restart: always
+    env_file:
+      - .env
     environment:
-      - PYTHONPATH=/app
-      - SELF_BASE=http://node1:5000
-      - PEER=True
-      - ROOT_HOST=node0
-      - ROOT_PORT=5000
-      - FLASK_DEBUG=0
+      PYTHONPATH: /app
+      SELF_BASE: http://node1:5000
+      PEER: "True"
+      ROOT_HOST: node0
+      ROOT_PORT: 5000
+      FLASK_DEBUG: "1"
+      WORKERS: "1"
+      THREADS: "4"
+      TIMEOUT: "120"
+      PUBNUB_UUID: node1
+      GUNICORN_CMD_ARGS: "--log-level debug --capture-output --access-logfile - --error-logfile -"
     ports:
       - "5001:5000"
+    # simple dependency; app itself waits for root via HTTP
     depends_on:
-      node0:
-        condition: service_healthy
+      - node0
 
   node2:
     build:
       context: .
       dockerfile: Dockerfile_blch
     container_name: node2
+    restart: always
+    env_file:
+      - .env
     environment:
-      - PYTHONPATH=/app
-      - SELF_BASE=http://node2:5000
-      - PEER=True
-      - ROOT_HOST=node0
-      - ROOT_PORT=5000
-      - FLASK_DEBUG=0
+      PYTHONPATH: /app
+      SELF_BASE: http://node2:5000
+      PEER: "True"
+      ROOT_HOST: node0
+      ROOT_PORT: 5000
+      FLASK_DEBUG: "1"
+      WORKERS: "1"
+      THREADS: "4"
+      TIMEOUT: "120"
+      PUBNUB_UUID: node2
+      GUNICORN_CMD_ARGS: "--log-level debug --capture-output --access-logfile - --error-logfile -"
     ports:
       - "5002:5000"
     depends_on:
-      node0:
-        condition: service_healthy
+      - node0
 
   node3:
     build:
       context: .
       dockerfile: Dockerfile_blch
     container_name: node3
+    restart: always
+    env_file:
+      - .env
     environment:
-      - PYTHONPATH=/app
-      - SELF_BASE=http://node3:5000
-      - PEER=True
-      - ROOT_HOST=node0
-      - ROOT_PORT=5000
-      - FLASK_DEBUG=0
+      PYTHONPATH: /app
+      SELF_BASE: http://node3:5000
+      PEER: "True"
+      ROOT_HOST: node0
+      ROOT_PORT: 5000
+      FLASK_DEBUG: "0"
+      WORKERS: "1"
+      THREADS: "4"
+      TIMEOUT: "120"
+      PUBNUB_UUID: node3
+      GUNICORN_CMD_ARGS: "--log-level debug --capture-output --access-logfile - --error-logfile -"
     ports:
       - "5003:5000"
     depends_on:
-      node0:
-        condition: service_healthy
+      - node0
 
 volumes:
   db_data:

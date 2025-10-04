@@ -1,1 +1,109 @@
+# ----------------------------
+# Python
+# ----------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+pip-wheel-metadata/
+*.manifest
+*.spec
+
+# Virtual environments
 .env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Jupyter / IPython
+.ipynb_checkpoints/
+*.ipynb
+.profile_default/
+.ipython/
+
+# ----------------------------
+# Logs & temp
+# ----------------------------
+*.log
+*.tmp
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Coverage / testing
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+htmlcov/
+.tox/
+.pytest_cache/
+
+# ----------------------------
+# IDE/editor
+# ----------------------------
+.vscode/
+.idea/
+*.iml
+
+# ----------------------------
+# Flask / Django
+# ----------------------------
+instance/
+*.db
+*.sqlite3
+*.sqlite
+db.sqlite3
+media/
+staticfiles/
+__debug__/
+
+# ----------------------------
+# Docker
+# ----------------------------
+*.pid
+*.seed
+docker-compose.override.yml
+.docker/
+.dockerignore
+.env.docker
+.env.prod
+.env.local
+
+# Local volumes / persistent data
+db_data/
+node*_data/
+
+# ----------------------------
+# Blockchain specific
+# ----------------------------
+wallets.json
+*.pem
+*.key
+*.crt
+
+# ----------------------------
+# OS
+# ----------------------------
+ehthumbs.db
+Icon?
+Desktop.ini
+
+# ----------------------------
+# Other
+# ----------------------------
+*.bak
+*.old
+*.orig
