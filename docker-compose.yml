@@ -1,8 +1,10 @@
+version: "3.9"
+
 services:
   db:
     image: postgres:15
     container_name: drf_db
-    restart: always
+    restart: unless-stopped
     environment:
       POSTGRES_DB: drfindex
       POSTGRES_USER: drfuser
@@ -27,46 +29,66 @@ services:
       context: ./api_backend
       dockerfile: Dockerfile
     container_name: drf_api
-    restart: always
+    restart: unless-stopped
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     environment:
       PYTHONPATH: /app
       DATABASE_URL: postgres://drfuser:drfpass@db:5432/drfindex
       DJANGO_SETTINGS_MODULE: app_blockchain.settings
+      DJANGO_DEBUG: "0"
+    command: >
+      bash -lc "
+      python manage.py migrate --noinput &&
+      gunicorn app_blockchain.wsgi:application
+        --bind 0.0.0.0:8000
+        --workers 2
+        --threads 4
+        --timeout 60
+        --access-logfile -
+        --error-logfile -
+      "
     ports:
       - "8000:8000"
     volumes:
-      - ./api_backend:/app # hot reload for Django
+      - ./api_backend:/app
+    healthcheck:
+      test: >
+        bash -lc "curl -fsS http://127.0.0.1:8000/health | grep -E '\"ok\": *true|\"status\": *\"ok\"'"
+      interval: 5s
+      timeout: 3s
+      retries: 50
+      start_period: 20s
 
+  # --- blockchain node images (shared build) ---
   node0:
     build:
       context: .
       dockerfile: Dockerfile_blch
     container_name: node0
-    restart: always
+    restart: unless-stopped
     env_file:
       - .env
     environment:
+      ROLE: ROOT
       PYTHONPATH: /app
       SELF_BASE: http://node0:5000
       PEER: "False"
       ROOT_HOST: node0
       ROOT_PORT: 5000
       FLASK_DEBUG: "1"
-      WORKERS: "1" # single worker -> shared in-memory state
+      WORKERS: "1"
       THREADS: "4"
       TIMEOUT: "120"
       PUBNUB_UUID: node0
+      MINER_TOKEN: secret123
       GUNICORN_CMD_ARGS: "--log-level debug --capture-output --access-logfile - --error-logfile -"
     ports:
       - "5000:5000"
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "curl -sf http://127.0.0.1:5000/health | python - <<'PY'\nimport sys, json\nj=json.load(sys.stdin)\nprint('OK' if j.get('ok') and (j.get('ready') or j.get('height',0)>=1) else 'FAIL')\nPY\n | grep -q OK",
-        ]
+      test: >
+        bash -lc "curl -sf http://127.0.0.1:5000/health | grep -E '\"ready\": *true|\"height\": *[1-9]'"
       interval: 5s
       timeout: 3s
       retries: 50
@@ -77,10 +99,11 @@ services:
       context: .
       dockerfile: Dockerfile_blch
     container_name: node1
-    restart: always
+    restart: unless-stopped
     env_file:
       - .env
     environment:
+      ROLE: ROOT
       PYTHONPATH: /app
       SELF_BASE: http://node1:5000
       PEER: "True"
@@ -94,19 +117,27 @@ services:
       GUNICORN_CMD_ARGS: "--log-level debug --capture-output --access-logfile - --error-logfile -"
     ports:
       - "5001:5000"
-    # simple dependency; app itself waits for root via HTTP
     depends_on:
-      - node0
+      node0:
+        condition: service_healthy
+    healthcheck:
+      test: >
+        bash -lc "curl -sf http://127.0.0.1:5000/health | grep -E '\"ready\": *true|\"ok\": *true'"
+      interval: 5s
+      timeout: 3s
+      retries: 50
+      start_period: 10s
 
   node2:
     build:
       context: .
       dockerfile: Dockerfile_blch
     container_name: node2
-    restart: always
+    restart: unless-stopped
     env_file:
       - .env
     environment:
+      ROLE: ROOT
       PYTHONPATH: /app
       SELF_BASE: http://node2:5000
       PEER: "True"
@@ -121,17 +152,26 @@ services:
     ports:
       - "5002:5000"
     depends_on:
-      - node0
+      node0:
+        condition: service_healthy
+    healthcheck:
+      test: >
+        bash -lc "curl -sf http://127.0.0.1:5000/health | grep -E '\"ready\": *true|\"ok\": *true'"
+      interval: 5s
+      timeout: 3s
+      retries: 50
+      start_period: 10s
 
   node3:
     build:
       context: .
       dockerfile: Dockerfile_blch
     container_name: node3
-    restart: always
+    restart: unless-stopped
     env_file:
       - .env
     environment:
+      ROLE: ROOT
       PYTHONPATH: /app
       SELF_BASE: http://node3:5000
       PEER: "True"
@@ -146,7 +186,49 @@ services:
     ports:
       - "5003:5000"
     depends_on:
-      - node0
+      node0:
+        condition: service_healthy
+    healthcheck:
+      test: >
+        bash -lc "curl -sf http://127.0.0.1:5000/health | grep -E '\"ready\": *true|\"ok\": *true'"
+      interval: 5s
+      timeout: 3s
+      retries: 50
+      start_period: 10s
+
+  # --- external miner service based on the same node image ---
+  miner:
+    build:
+      context: .
+      dockerfile: Dockerfile_blch
+    container_name: miner
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      ROLE: MINER
+      PYTHONPATH: /app
+      # Point miner at whichever node you want; example uses node3:
+      MINER_NODE_URL: "http://node3:5000"
+      MINER_REWARD_ADDRESS: "miner-demo-addr"
+      MINER_TOKEN: secret123
+      MINER_INTERVAL: 5
+      MINER_ALLOW_EMPTY: "0"
+      MINER_DEBUG_DIR: "/app/block_data"
+      # tune fail/backoff behaviour:
+      MINER_MAX_FAILS: 20
+    depends_on:
+      - node3
+    volumes:
+      # host ./block_data <-> container /app/block_data so debug files are readable on host
+      - ./block_data:/app/block_data
+    healthcheck:
+      test: >
+        bash -lc "curl -sf ${MINER_NODE_URL:-http://node3:5000}/health | grep -E '\"ready\": *true|\"ok\": *true' || exit 1"
+      interval: 5s
+      timeout: 3s
+      retries: 50
+      start_period: 10s
 
 volumes:
   db_data:

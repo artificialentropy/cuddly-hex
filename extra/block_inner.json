@@ -1,0 +1,150 @@
+{
+  "data": [
+    {
+      "id": "3bd18773",
+      "input": {
+        "address": "c0309bb5",
+        "balances": {
+          "COIN": 1000
+        },
+        "fee": 0,
+        "public_key": "-----BEGIN PUBLIC KEY-----\nMFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAE10cdQalMV5ARJlmmPHhWiofy/Q9YqlHJ\nZ5zeJRx+dpqbTcX833Px/B5d34x/X6eNUFNDSU2tVg9JlzDaUgVD8w==\n-----END PUBLIC KEY-----\n",
+        "signature": [
+          22050850870272045461272172619534094445228049744751644505622895537072941785496,
+          12802244665906882802491258728686579463309488125191711280447060251132802295329
+        ],
+        "timestamp": 1759629632788885590
+      },
+      "metadata": {},
+      "output": {
+        "09b09523": {
+          "COIN": 18
+        },
+        "c0309bb5": {
+          "COIN": 982
+        }
+      }
+    },
+    {
+      "id": "a6c9d1e9",
+      "input": {
+        "address": "c0309bb5",
+        "balances": {
+          "COIN": 1000
+        },
+        "fee": 0,
+        "public_key": "-----BEGIN PUBLIC KEY-----\nMFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAE10cdQalMV5ARJlmmPHhWiofy/Q9YqlHJ\nZ5zeJRx+dpqbTcX833Px/B5d34x/X6eNUFNDSU2tVg9JlzDaUgVD8w==\n-----END PUBLIC KEY-----\n",
+        "signature": [
+          96256040030256897637345250464620239181963584031830348075879524059862131065286,
+          64415387250217566005002680582813296536633408335720053789392544268454457963604
+        ],
+        "timestamp": 1759629633262161849
+      },
+      "metadata": {},
+      "output": {
+        "09b09523": {
+          "COIN": 18
+        },
+        "c0309bb5": {
+          "COIN": 982
+        }
+      }
+    },
+    {
+      "id": "b272a29a",
+      "input": {
+        "address": "c0309bb5",
+        "balances": {
+          "COIN": 1000
+        },
+        "fee": 0,
+        "public_key": "-----BEGIN PUBLIC KEY-----\nMFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAE10cdQalMV5ARJlmmPHhWiofy/Q9YqlHJ\nZ5zeJRx+dpqbTcX833Px/B5d34x/X6eNUFNDSU2tVg9JlzDaUgVD8w==\n-----END PUBLIC KEY-----\n",
+        "signature": [
+          94124795199324426641570949466917033464350388958660111470668432902483737230301,
+          65012089928895079728864095362976775604427319704307839654133169194594589498027
+        ],
+        "timestamp": 1759629633625553950
+      },
+      "metadata": {},
+      "output": {
+        "09b09523": {
+          "COIN": 18
+        },
+        "c0309bb5": {
+          "COIN": 982
+        }
+      }
+    },
+    {
+      "id": "690a93d2",
+      "input": {
+        "address": "c0309bb5",
+        "balances": {
+          "COIN": 1000
+        },
+        "fee": 0,
+        "public_key": "-----BEGIN PUBLIC KEY-----\nMFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAE10cdQalMV5ARJlmmPHhWiofy/Q9YqlHJ\nZ5zeJRx+dpqbTcX833Px/B5d34x/X6eNUFNDSU2tVg9JlzDaUgVD8w==\n-----END PUBLIC KEY-----\n",
+        "signature": [
+          62681915958743457602208593054590265454610183148455221825730150682169253443433,
+          24817690812538169656626127325673837883096477634341144072411094085647959726949
+        ],
+        "timestamp": 1759629633802945321
+      },
+      "metadata": {},
+      "output": {
+        "09b09523": {
+          "COIN": 18
+        },
+        "c0309bb5": {
+          "COIN": 982
+        }
+      }
+    },
+    {
+      "id": "5bc798e0",
+      "input": {
+        "address": "c0309bb5",
+        "balances": {
+          "COIN": 1000
+        },
+        "fee": 0,
+        "public_key": "-----BEGIN PUBLIC KEY-----\nMFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAE10cdQalMV5ARJlmmPHhWiofy/Q9YqlHJ\nZ5zeJRx+dpqbTcX833Px/B5d34x/X6eNUFNDSU2tVg9JlzDaUgVD8w==\n-----END PUBLIC KEY-----\n",
+        "signature": [
+          51022234278952473521765043905244175068668611688478025145550370200203737946798,
+          83100236396585500602554409837115960244927607001211743405638526779886902463617
+        ],
+        "timestamp": 1759629633936318452
+      },
+      "metadata": {},
+      "output": {
+        "09b09523": {
+          "COIN": 18
+        },
+        "c0309bb5": {
+          "COIN": 982
+        }
+      }
+    },
+    {
+      "id": "cb-1759630675621",
+      "input": {
+        "address": "*--official-mining-reward--*"
+      },
+      "metadata": {
+        "miner": "miner-demo-addr"
+      },
+      "output": {
+        "miner-demo-addr": {
+          "COIN": 50
+        }
+      }
+    }
+  ],
+  "difficulty": 3,
+  "hash": "0c0cc93bf558d41afa549025cf5e7cf705ae0d80c1a4773f3789be60dfe57ecf",
+  "height": null,
+  "last_hash": "genesis_hash",
+  "merkle": "3b32f0947b0436d49fff5d3499cd854f74bb7b0e8c723807701e542e4c6233fa",
+  "nonce": 1,
+  "timestamp": 1759630675621619500
+}

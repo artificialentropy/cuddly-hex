@@ -52,7 +52,7 @@ class Transaction:
         self.metadata: Dict[str, Any] = dict(metadata or {})
         self.output: Dict[str, Dict[str, int]] = dict(output or {})
         self.input: Dict[str, Any] = dict(input or {})
-
+        self.fee = int((input or {}).get("fee", 0))
         # If constructed with a sender wallet, synthesize outputs + input signature
         if sender_wallet:
             self._create_transaction(sender_wallet, recipient, amount_map or {}, asset_ids or [])
@@ -118,31 +118,29 @@ class Transaction:
         spent_snapshot = {c: int(sender_wallet.balances[c]) for c in spent_map}
         self.input = {
             "timestamp": time.time_ns(),
-            "balances": spent_snapshot,     # ONLY currencies being spent
+            "balances": spent_snapshot,
             "address": sender_wallet.address,
             "public_key": sender_wallet.public_key,
+            "fee": int(self.metadata.get("fee", 0)) if "fee" in (self.metadata or {}) else 0,
             "signature": sender_wallet.sign(self.output),
         }
 
     # ---------------------------
     # Asset operations
     # ---------------------------
-    @staticmethod
     def list_asset_for_sale(owner_wallet: Wallet, asset: Asset, price: int, currency="COIN", metadata=None):
-        """Zero-sum metadata-only tx: no currency moves, just a signed intent."""
         if asset.owner != owner_wallet.address:
             raise Exception("Only the asset owner may list it for sale")
-        asset.set_price(price, currency)
 
         meta = dict(metadata or {})
         meta["asset_listing"] = {"asset_id": asset.asset_id, "price": int(price), "currency": currency}
 
-        output: Dict[str, Dict[str, int]] = {}
+        output = {}
         return Transaction(
             output=output,
             input={
                 "timestamp": time.time_ns(),
-                "balances": {},  # zero-sum
+                "balances": {},
                 "address": owner_wallet.address,
                 "public_key": owner_wallet.public_key,
                 "signature": owner_wallet.sign(output),
@@ -150,22 +148,19 @@ class Transaction:
             metadata=meta
         )
 
-    @staticmethod
     def cancel_listing(owner_wallet: Wallet, asset: Asset, metadata=None):
-        """Zero-sum metadata-only tx: cancel a listing, no currency moves."""
         if asset.owner != owner_wallet.address:
             raise Exception("Only the asset owner can cancel listing")
-        asset.set_price(0)
 
         meta = dict(metadata or {})
         meta["asset_listing_cancel"] = {"asset_id": asset.asset_id}
 
-        output: Dict[str, Dict[str, int]] = {}
+        output = {}
         return Transaction(
             output=output,
             input={
                 "timestamp": time.time_ns(),
-                "balances": {},  # zero-sum
+                "balances": {},
                 "address": owner_wallet.address,
                 "public_key": owner_wallet.public_key,
                 "signature": owner_wallet.sign(output),
@@ -173,9 +168,7 @@ class Transaction:
             metadata=meta
         )
 
-    @staticmethod
     def purchase_asset(buyer_wallet: Wallet, asset: Asset, get_owner_wallet_fn, metadata=None):
-        """Buyer spends {currency: price}; seller receives; buyer gets change; ownership transfers."""
         seller_address = asset.owner
         if seller_address == buyer_wallet.address:
             raise Exception("Buyer already owns asset")
@@ -191,42 +184,33 @@ class Transaction:
         if not seller_wallet:
             raise Exception("Seller wallet not found")
 
-        # Use the core path to ensure consistent input/output structure and validation
         tx = Transaction(
             sender_wallet=buyer_wallet,
             recipient=seller_address,
             amount_map={currency: price},
+            asset_ids=[asset.asset_id]
         )
 
-        # Attach canonical purchase metadata (single dict)
-        meta = dict(metadata or {})
-        meta["asset_purchase"] = {
+        tx.metadata = dict(metadata or {})
+        tx.metadata["asset_purchase"] = {
             "asset_id": asset.asset_id,
             "price": price,
             "currency": currency,
             "from": seller_address,
             "to": buyer_wallet.address
         }
-        tx.metadata = meta
-
-        # Side-effect: update asset ownership (domain action outside the ledger)
-        asset.owner = buyer_wallet.address
         return tx
 
-    @staticmethod
     def transfer_asset_direct(sender_wallet: Wallet, recipient_address: str, asset: Asset, metadata=None):
-        """
-        Zero-sum asset transfer (no currency). Authenticates ownership transfer via signature.
-        """
         if asset.owner != sender_wallet.address:
             raise Exception("Only the current owner can transfer this asset")
 
-        output: Dict[str, Dict[str, int]] = {}  # zero-sum; we only record metadata + signature
+        output = {}
         tx = Transaction(
             output=output,
             input={
                 "timestamp": time.time_ns(),
-                "balances": {},  # zero-sum
+                "balances": {},
                 "address": sender_wallet.address,
                 "public_key": sender_wallet.public_key,
                 "signature": sender_wallet.sign(output)
@@ -238,9 +222,8 @@ class Transaction:
             "from": sender_wallet.address,
             "to": recipient_address
         }
-
-        asset.owner = recipient_address
         return tx
+
 
     # ---------------------------
     # Reward transaction
@@ -284,7 +267,9 @@ class Transaction:
     @staticmethod
     def is_valid_transaction(transaction, resolve_asset_fn=None):
         tx_input, tx_output = transaction.input, transaction.output
-
+        fee = int(transaction.input.get("fee", 0) if isinstance(transaction.input, dict) else 0)
+        if fee < 0:
+            raise Exception("Negative fee")
         # Rewards: allow minting of new currency; must match the special input type
         if tx_input == MINING_REWARD_INPUT:
             if Transaction._has_negative_amounts(tx_output):
@@ -327,7 +312,11 @@ class Transaction:
             extra = output_currencies.difference(input_balances.keys())
             if extra:
                 raise Exception(f"Unexpected currencies in outputs: {sorted(extra)}")
-
+        if input_balances:
+            coin_in = int(input_balances.get("COIN", 0))
+            coin_out = Transaction._sum_output_for_currency(transaction.output, "COIN")
+            if coin_in < coin_out + fee:
+                raise Exception("Insufficient COIN to cover outputs + fee")
         # --- Asset validation (optional hook) ---
         if transaction.metadata:
             if "asset_purchase" in transaction.metadata:

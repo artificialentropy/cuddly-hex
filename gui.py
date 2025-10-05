@@ -104,46 +104,50 @@ class ApiClient:
             return ("/u/tx", True)
         return ("/wallet/transact", False)
 
-    def send_coins(self, recipient, amount, currency="COIN", metadata=None):
+    def send_coins(self, recipient, amount, currency="COIN", fee=0, metadata=None):
         path, auth = self._tx_endpoint()
         payload = {
             "action": "transfer",
             "recipient": recipient,
             "amount": safe_int(amount),
             "currency": currency,
+            "fee": safe_int(fee, 0),
         }
         if metadata:
             payload["metadata"] = metadata
         return self._req("POST", path, payload, auth=auth)
 
-    def list_asset(self, asset_id, price, currency="COIN", metadata=None):
+    def list_asset(self, asset_id, price, currency="COIN", fee=0, metadata=None):
         path, auth = self._tx_endpoint()
         payload = {
             "action": "list",
             "asset_id": asset_id,
             "price": safe_int(price),
             "currency": currency,
+            "fee": safe_int(fee, 0),
         }
         if metadata:
             payload["metadata"] = metadata
         return self._req("POST", path, payload, auth=auth)
 
-    def purchase_asset(self, asset_id, metadata=None):
+    def purchase_asset(self, asset_id, fee=0, metadata=None):
         path, auth = self._tx_endpoint()
         payload = {
             "action": "purchase",
             "asset_id": asset_id,
+            "fee": safe_int(fee, 0),
         }
         if metadata:
             payload["metadata"] = metadata
         return self._req("POST", path, payload, auth=auth)
 
-    def transfer_asset(self, asset_id, recipient, metadata=None):
+    def transfer_asset(self, asset_id, recipient, fee=0, metadata=None):
         path, auth = self._tx_endpoint()
         payload = {
             "action": "transfer_asset",
             "asset_id": asset_id,
             "recipient": recipient,
+            "fee": safe_int(fee, 0),
         }
         if metadata:
             payload["metadata"] = metadata
@@ -156,7 +160,7 @@ class WalletGUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Blockchain Wallet Console")
-        self.geometry("980x700")
+        self.geometry("1000x740")
         self.minsize(920, 640)
 
         # state
@@ -254,7 +258,11 @@ class WalletGUI(tk.Tk):
         ttk.Label(tx_box, text="Currency:").grid(row=0, column=4, sticky="w")
         ttk.Entry(tx_box, textvariable=self.currency_var, width=10).grid(row=0, column=5, sticky="we", padx=5)
 
-        ttk.Button(tx_box, text="Send", command=self._async(self.on_send_coins)).grid(row=0, column=6, padx=5)
+        ttk.Label(tx_box, text="Fee:").grid(row=0, column=6, sticky="w")
+        self.tx_fee_var = tk.StringVar(value="0")
+        ttk.Entry(tx_box, textvariable=self.tx_fee_var, width=8).grid(row=0, column=7, sticky="we", padx=5)
+
+        ttk.Button(tx_box, text="Send", command=self._async(self.on_send_coins)).grid(row=0, column=8, padx=5)
 
         tx_box.grid_columnconfigure(1, weight=1)
 
@@ -308,6 +316,7 @@ class WalletGUI(tk.Tk):
         self.list_asset_id_var = tk.StringVar()
         self.list_price_var = tk.StringVar(value="0")
         self.list_currency_var = tk.StringVar(value="COIN")
+        self.list_fee_var = tk.StringVar(value="0")
 
         ttk.Label(act, text="Asset ID:").grid(row=0, column=0, sticky="w")
         ttk.Entry(act, textvariable=self.list_asset_id_var, width=18).grid(row=0, column=1, padx=5, sticky="we")
@@ -318,22 +327,38 @@ class WalletGUI(tk.Tk):
         ttk.Label(act, text="Currency:").grid(row=0, column=4, sticky="w")
         ttk.Entry(act, textvariable=self.list_currency_var, width=10).grid(row=0, column=5, padx=5)
 
-        ttk.Button(act, text="List for Sale", command=self._async(self.on_list_asset)).grid(row=0, column=6, padx=5)
+        ttk.Label(act, text="Fee:").grid(row=0, column=6, sticky="w")
+        ttk.Entry(act, textvariable=self.list_fee_var, width=8).grid(row=0, column=7, padx=5, sticky="we")
+
+        ttk.Button(act, text="List for Sale", command=self._async(self.on_list_asset)).grid(row=0, column=8, padx=5)
 
         # purchase
         self.purchase_asset_id_var = tk.StringVar()
+        self.purchase_fee_var = tk.StringVar(value="0")
+
         ttk.Label(act, text="Asset ID:").grid(row=1, column=0, sticky="w")
         ttk.Entry(act, textvariable=self.purchase_asset_id_var, width=18).grid(row=1, column=1, padx=5, sticky="we")
-        ttk.Button(act, text="Purchase", command=self._async(self.on_purchase_asset)).grid(row=1, column=2, padx=5)
+
+        ttk.Label(act, text="Fee:").grid(row=1, column=2, sticky="w")
+        ttk.Entry(act, textvariable=self.purchase_fee_var, width=8).grid(row=1, column=3, padx=5, sticky="we")
+
+        ttk.Button(act, text="Purchase", command=self._async(self.on_purchase_asset)).grid(row=1, column=4, padx=5)
 
         # transfer
         self.transfer_asset_id_var = tk.StringVar()
         self.transfer_recipient_var = tk.StringVar()
+        self.transfer_fee_var = tk.StringVar(value="0")
+
         ttk.Label(act, text="Asset ID:").grid(row=2, column=0, sticky="w")
         ttk.Entry(act, textvariable=self.transfer_asset_id_var, width=18).grid(row=2, column=1, padx=5, sticky="we")
+
         ttk.Label(act, text="Recipient:").grid(row=2, column=2, sticky="w")
         ttk.Entry(act, textvariable=self.transfer_recipient_var, width=22).grid(row=2, column=3, padx=5, sticky="we")
-        ttk.Button(act, text="Transfer", command=self._async(self.on_transfer_asset)).grid(row=2, column=4, padx=5)
+
+        ttk.Label(act, text="Fee:").grid(row=2, column=4, sticky="w")
+        ttk.Entry(act, textvariable=self.transfer_fee_var, width=8).grid(row=2, column=5, padx=5, sticky="we")
+
+        ttk.Button(act, text="Transfer", command=self._async(self.on_transfer_asset)).grid(row=2, column=6, padx=5)
 
         return frame
 
@@ -408,13 +433,14 @@ class WalletGUI(tk.Tk):
         recipient = self.tx_recipient_var.get().strip()
         amount = self.tx_amount_var.get().strip()
         currency = self.currency_var.get().strip() or "COIN"
+        fee = self.tx_fee_var.get().strip()
 
         if not recipient or not amount:
             messagebox.showwarning("Missing fields", "Recipient and Amount are required.")
             return
 
-        j = self.api.send_coins(recipient, amount, currency)
-        self.log(f"[Transfer] {amount} {currency} -> {recipient} : {j.get('id', '')}")
+        j = self.api.send_coins(recipient, amount, currency, fee=fee)
+        self.log(f"[Transfer] {amount} {currency} (fee {fee or 0}) -> {recipient} : {j.get('id', '')}")
         self.show_json(j)
 
     def on_register_asset(self):
@@ -444,6 +470,7 @@ class WalletGUI(tk.Tk):
         aid = self.list_asset_id_var.get().strip()
         price = self.list_price_var.get().strip()
         currency = self.list_currency_var.get().strip() or "COIN"
+        fee = self.list_fee_var.get().strip()
 
         if not aid:
             messagebox.showwarning("Missing Asset ID", "Provide an Asset ID.")
@@ -452,27 +479,29 @@ class WalletGUI(tk.Tk):
             messagebox.showwarning("Missing Price", "Provide a list price.")
             return
 
-        j = self.api.list_asset(aid, price, currency)
-        self.log(f"[Asset List] {aid} for {price} {currency} -> {j}")
+        j = self.api.list_asset(aid, price, currency, fee=fee)
+        self.log(f"[Asset List] {aid} for {price} {currency} (fee {fee or 0}) -> {j}")
         self.show_json(j)
 
     def on_purchase_asset(self):
         aid = self.purchase_asset_id_var.get().strip()
+        fee = self.purchase_fee_var.get().strip()
         if not aid:
             messagebox.showwarning("Missing Asset ID", "Provide an Asset ID.")
             return
-        j = self.api.purchase_asset(aid)
-        self.log(f"[Asset Purchase] {aid} -> {j}")
+        j = self.api.purchase_asset(aid, fee=fee)
+        self.log(f"[Asset Purchase] {aid} (fee {fee or 0}) -> {j}")
         self.show_json(j)
 
     def on_transfer_asset(self):
         aid = self.transfer_asset_id_var.get().strip()
         recipient = self.transfer_recipient_var.get().strip()
+        fee = self.transfer_fee_var.get().strip()
         if not aid or not recipient:
             messagebox.showwarning("Missing fields", "Provide Asset ID and Recipient.")
             return
-        j = self.api.transfer_asset(aid, recipient)
-        self.log(f"[Asset Transfer] {aid} -> {recipient} : {j}")
+        j = self.api.transfer_asset(aid, recipient, fee=fee)
+        self.log(f"[Asset Transfer] {aid} -> {recipient} (fee {fee or 0}) : {j}")
         self.show_json(j)
 
     def on_get_mempool(self):

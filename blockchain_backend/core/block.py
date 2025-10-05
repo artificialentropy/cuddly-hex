@@ -1,13 +1,14 @@
 # core/block.py
 import time
+from statistics import median
 from typing import Any, Dict, List, Optional
-from blockchain_backend.utils.config import MINE_RATE_NS
+import os
+from blockchain_backend.utils.config import MINE_RATE, SECONDS, NETWORK_ID
 from blockchain_backend.utils.crypto_hash import crypto_hash
 from blockchain_backend.utils.hex_to_binary import hex_to_binary
+from blockchain_backend.utils.merkle import merkle_root
 
-# Convert MINE_RATE (seconds) to nanoseconds for consistent comparison with time.time_ns()
-MINE_RATE_NS = int(MINE_RATE_NS * 1_000_000_000)
-
+# Genesis block (static, shared by all nodes)
 GENESIS_DATA: Dict[str, Any] = {
     "timestamp": 1,                    # ns (arbitrary for genesis)
     "last_hash": "genesis_last_hash",
@@ -15,7 +16,26 @@ GENESIS_DATA: Dict[str, Any] = {
     "data": [],                        # type: List[Any]
     "difficulty": 3,
     "nonce": 0,                        # must be int; mining increments this
+    "merkle": merkle_root([]),
+    "height": 0,
 }
+
+MAX_FUTURE_SKEW_NS = 30 * SECONDS     # allow ~30s clock skew
+
+# core/block.py (inside Block class or module-level)
+
+
+# default params (override via env)
+MIN_DIFFICULTY = int(os.getenv("MIN_DIFFICULTY", "1"))
+MAX_DIFFICULTY = int(os.getenv("MAX_DIFFICULTY", "64"))
+DIFFICULTY_STEP_UP = int(os.getenv("DIFFICULTY_STEP_UP", "1"))
+DIFFICULTY_STEP_DOWN = int(os.getenv("DIFFICULTY_STEP_DOWN", "1"))
+# MINE_RATE should be in nanoseconds (use env MINE_RATE_NS) or fall back to seconds->ns
+MINE_RATE_NS = int(os.getenv("MINE_RATE_NS", str(int(float(os.getenv("MINE_RATE", "4")) * 1e9))))
+
+def _median_time_past(recent_blocks: List["Block"]) -> int:
+    ts = [b.timestamp for b in recent_blocks[-11:]]  # last 11 blocks
+    return int(median(ts)) if ts else 0
 
 
 class Block:
@@ -32,6 +52,8 @@ class Block:
         data: List[Any],
         difficulty: int,
         nonce: int,
+        merkle: Optional[str] = None,
+        height: Optional[int] = None
     ):
         self.timestamp = int(timestamp)
         self.last_hash = str(last_hash)
@@ -39,6 +61,8 @@ class Block:
         self.data = data
         self.difficulty = int(difficulty)
         self.nonce = int(nonce)
+        self.merkle = merkle if merkle is not None else merkle_root(data)
+        self.height = height  # optional; set by blockchain on append
 
     def __repr__(self) -> str:
         return (
@@ -48,7 +72,9 @@ class Block:
             f"hash: {self.hash}, "
             f"data: {self.data}, "
             f"difficulty: {self.difficulty}, "
-            f"nonce: {self.nonce})"
+            f"nonce: {self.nonce}, "
+            f"merkle: {self.merkle}, "
+            f"height: {self.height})"
         )
 
     def __eq__(self, other: object) -> bool:
@@ -61,6 +87,8 @@ class Block:
             and self.data == other.data
             and self.difficulty == other.difficulty
             and self.nonce == other.nonce
+            and self.merkle == other.merkle
+            and self.height == other.height
         )
 
     def to_json(self) -> Dict[str, Any]:
@@ -72,6 +100,16 @@ class Block:
             "data": self.data,
             "difficulty": self.difficulty,
             "nonce": self.nonce,
+            "merkle": self.merkle,
+            "height": self.height,
+        }
+    
+    def to_header(self, data):
+        return {
+            "last_hash": self.hash,
+            "difficulty": self.difficulty,
+            "timestamp": int(time.time_ns()),
+            "merkle": merkle_root(data)
         }
 
     @staticmethod
@@ -84,59 +122,98 @@ class Block:
         """Generate the genesis block."""
         return Block(**GENESIS_DATA)
 
+    
+    def adjust_difficulty(parent_block: Optional["Block"], now_timestamp_ns: int) -> int:
+        """
+        parent_block: the previous Block (may be None for genesis)
+        now_timestamp_ns: current timestamp in ns
+        Returns adjusted difficulty (ensures bounds and step +/- 1).
+        """
+        try:
+            pd = int(parent_block.difficulty) if (parent_block is not None and getattr(parent_block, "difficulty", None) is not None) else MIN_DIFFICULTY
+        except Exception:
+            pd = MIN_DIFFICULTY
+
+        pd = max(pd, MIN_DIFFICULTY)
+
+        # If mine rate not configured, don't change difficulty
+        if MINE_RATE_NS <= 0:
+            return pd
+
+        parent_ts = int(parent_block.timestamp) if (parent_block is not None and getattr(parent_block, "timestamp", None) is not None) else 0
+
+        if (now_timestamp_ns - parent_ts) < MINE_RATE_NS:
+            return min(pd + DIFFICULTY_STEP_UP, MAX_DIFFICULTY)
+        else:
+            return max(pd - DIFFICULTY_STEP_DOWN, MIN_DIFFICULTY)
+
+
     @staticmethod
     def mine_block(last_block: "Block", data: List[Any]) -> "Block":
         """
         Mine a block based on the given last_block and data, until a block hash
         is found that meets the leading 0's proof-of-work requirement.
+        Hash preimage includes NETWORK_ID and merkle root.
         """
         timestamp = time.time_ns()
         last_hash = last_block.hash
         difficulty = Block.adjust_difficulty(last_block, timestamp)
         nonce = 0
-        block_hash = crypto_hash(timestamp, last_hash, data, difficulty, nonce)
+        merkle = merkle_root(data)
 
-        # Proof-of-work loop
+        h = crypto_hash(NETWORK_ID, timestamp, last_hash, data, difficulty, nonce, merkle)
         target_prefix = "0" * difficulty
-        while hex_to_binary(block_hash)[:difficulty] != target_prefix:
+
+        while hex_to_binary(h)[:difficulty] != target_prefix:
             nonce += 1
             timestamp = time.time_ns()
             difficulty = Block.adjust_difficulty(last_block, timestamp)
-            # re-evaluate target when difficulty changes
             target_prefix = "0" * difficulty
-            block_hash = crypto_hash(timestamp, last_hash, data, difficulty, nonce)
+            h = crypto_hash(NETWORK_ID, timestamp, last_hash, data, difficulty, nonce, merkle)
 
-        return Block(timestamp, last_hash, block_hash, data, difficulty, nonce)
 
-    @staticmethod
-    def adjust_difficulty(last_block: "Block", new_timestamp: int) -> int:
-        if (new_timestamp - int(last_block.timestamp)) < MINE_RATE_NS:
-            return last_block.difficulty + 1
-        return max(1, last_block.difficulty - 1)
+        return Block(timestamp, last_hash, h, data, difficulty, nonce, merkle)
 
     @staticmethod
     def is_valid_block(last_block: "Block", block: "Block") -> None:
         """
         Validate block by enforcing the following rules:
-          - the block must have the proper last_hash reference
-          - the block must meet the proof of work requirement
-          - the difficulty must only adjust by 1
-          - the block hash must be a valid combination of the block fields
+          - proper last_hash linkage
+          - PoW target satisfied
+          - difficulty only adjusts by ±1
+          - timestamp sanity (future skew + median-time-past)
+          - merkle root matches data
+          - hash matches exact preimage (including NETWORK_ID & merkle)
         """
+        # Linkage
         if block.last_hash != last_block.hash:
             raise Exception("The block last_hash must be correct")
 
-        # Enforce PoW
+        # PoW requirement
         if hex_to_binary(block.hash)[: block.difficulty] != "0" * block.difficulty:
             raise Exception("The proof of work requirement was not met")
 
-        # Enforce difficulty step of ±1 (and minimum 1 is ensured by mining/adjustment)
+        # Difficulty step ±1
         if abs(last_block.difficulty - block.difficulty) > 1:
             raise Exception("The block difficulty must only adjust by 1")
 
-        # Reconstruct the hash with the exact same parameter order as mine_block
+        # Timestamp sanity
+        now = time.time_ns()
+        if (block.timestamp - now) > MAX_FUTURE_SKEW_NS:
+            raise Exception("Block timestamp too far in the future")
+
+        # Median-time-past (with just last_block as minimal input; better if caller passes last N)
+        mtp = _median_time_past([last_block])
+        if block.timestamp <= mtp:
+            raise Exception("Block timestamp <= median past")
+
+        # Merkle root integrity
+        if block.merkle != merkle_root(block.data):
+            raise Exception("Invalid merkle root")
+
+        # Hash must match preimage (include NETWORK_ID & merkle)
         reconstructed_hash = crypto_hash(
-            block.timestamp, block.last_hash, block.data, block.difficulty, block.nonce
+            NETWORK_ID, block.timestamp, block.last_hash, block.data, block.difficulty, block.nonce, block.merkle
         )
         if block.hash != reconstructed_hash:
             raise Exception("The block hash must be correct")

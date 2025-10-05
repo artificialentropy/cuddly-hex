@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
-
+from blockchain_backend.utils.config import GENESIS_CHECKPOINT_HASH
 from blockchain_backend.core.block import Block as bp
 from blockchain_backend.wallet.transaction import Transaction
 from blockchain_backend.wallet.wallet import Wallet
@@ -14,6 +14,8 @@ from blockchain_backend.utils.config import (
 
 
 BlockOrJson = Union[bp, Dict[str, Any]]
+from blockchain_backend.utils.config import RETARGET_WINDOW, TARGET_BLOCK_NS, MAX_ADJ_FACTOR
+
 
 
 class Blockchain:
@@ -24,7 +26,17 @@ class Blockchain:
 
     def __init__(self) -> None:
         self.chain: List[bp] = [bp.genesis()]
-
+    def _retarget(self):
+        n = len(self.chain)
+        if n < RETARGET_WINDOW+1: 
+            return self.chain[-1].difficulty
+        window = self.chain[-RETARGET_WINDOW:]
+        span = window[-1].timestamp - window[0].timestamp
+        avg = span / RETARGET_WINDOW
+        last_diff = self.chain[-1].difficulty
+        ratio = max(1/MAX_ADJ_FACTOR, min(MAX_ADJ_FACTOR, avg / TARGET_BLOCK_NS))
+        new_diff = max(1, int(round(last_diff / ratio)))
+        return new_diff
     # -------------------------
     # Basic operations
     # -------------------------
@@ -33,9 +45,13 @@ class Blockchain:
         Append a mined block containing 'data' (tx json dicts).
         Returns the new block.
         """
-        new_block = bp.mine_block(self.chain[-1], data)
-        self.chain.append(new_block)
-        return new_block
+        
+        last = self.chain[-1]
+        class _Fake: pass
+        fake = _Fake(); fake.timestamp=last.timestamp; fake.hash=last.hash; fake.difficulty=self._retarget()
+        b = bp.mine_block(fake, data)   # bp.adjust_difficulty uses last_block.difficulty baseline
+        b.height = len(self.chain)
+        self.chain.append(b)
 
     def __repr__(self) -> str:
         return f"Blockchain: {self.chain}"
@@ -102,8 +118,8 @@ class Blockchain:
         if not chain:
             raise Exception("Empty chain is invalid")
 
-        if chain[0] != bp.genesis():
-            raise Exception("The genesis block must be valid")
+        if chain[0] != bp.genesis() or getattr(chain[0], "hash", None) != GENESIS_CHECKPOINT_HASH:
+            raise Exception("The genesis block must match network checkpoint")
 
         for i in range(1, len(chain)):
             block = chain[i]

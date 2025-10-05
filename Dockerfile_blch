@@ -1,39 +1,38 @@
-# ---- Runtime base ----
+# Dockerfile_blch
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/app
 
 WORKDIR /app
 
-# System deps: curl for healthchecks; build tools only if needed by your reqs (kept minimal)
+# Install minimal system deps
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl \
  && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for Docker layer caching
-COPY requirements.txt .
-
-# Install python deps
+# Copy requirements and install
+COPY requirements.txt /app/requirements.txt
 RUN pip install --upgrade pip \
- && pip install -r requirements.txt
+ && pip install -r /app/requirements.txt
 
-# Copy app source
-COPY blockchain_backend ./blockchain_backend
+# Copy app and scripts into /app
+COPY blockchain_backend/ /app/blockchain_backend/
+COPY miners/ /app/
+COPY docker/entrypoint.sh /app/entrypoint.sh
+COPY docker/miner.sh /app/docker/miner.sh
 
-# Create non-root user
-RUN useradd -m appuser
+# Make sure shell scripts use LF line endings and are executable.
+# (If you build on Windows Git might check out CRLF; this ensures executable bit.)
+RUN chmod +x /app/entrypoint.sh /app/docker/miner.sh || true
+
+
+# Create non-root user and set ownership, then switch to it
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
-# Expose internal Flask port
 EXPOSE 5000
 
-# Gunicorn tuning via envs (override at runtime if you want)
-#   WORKERS: number of workers
-#   THREADS: threads per worker
-#   TIMEOUT: seconds before worker is killed
-ENV WORKERS=2 THREADS=4 TIMEOUT=120
-
-# Run Gunicorn (WSGI app is blockchain_backend.app:app)
-CMD ["bash", "-lc", "gunicorn -b 0.0.0.0:5000 blockchain_backend.app:app --workers=${WORKERS} --threads=${THREADS} --timeout=${TIMEOUT} --graceful-timeout=30 --keep-alive=5"]
+ENTRYPOINT ["/app/entrypoint.sh"]

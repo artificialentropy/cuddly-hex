@@ -102,6 +102,11 @@ class TransactionPool:
         # Reserve locks
         for aid in to_lock.keys():
             self.asset_locks[aid] = tx_id
+        MAX_MEMPOOL = 5000
+
+        # in TransactionPool.set_transaction, before inserting:
+        if len(self.transaction_map) >= MAX_MEMPOOL:
+            raise Exception("mempool full")
 
         # 3) Insert transaction
         self.transaction_map[tx_id] = transaction
@@ -183,9 +188,15 @@ class TransactionPool:
         return {"transactions": self.transaction_data()}
 
     def get_transactions_for_mining(self, limit: Optional[int] = None) -> List[Transaction]:
-        """Return transactions for block mining, FIFO."""
-        items = sorted(self.transaction_map.values(), key=lambda t: self._timestamps.get(t.id, 0))
+        items = list(self.transaction_map.values())
+        def fee_rate(t: Transaction) -> int:
+            fee = int((t.input or {}).get("fee", 0)) if isinstance(t.input, dict) else 0
+            # tiny proxy for size = num of output entries
+            sz = max(1, sum(len(v) for v in (t.output or {}).values()))
+            return fee // sz
+        items.sort(key=lambda t: (-fee_rate(t), self._timestamps.get(t.id, 0)))
         return items[:limit] if limit else items
+
 
     def prune_expired(self, ttl_seconds: int = 3600) -> None:
         """Remove transactions older than `ttl_seconds` and release any asset locks."""
