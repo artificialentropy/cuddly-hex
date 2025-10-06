@@ -3,10 +3,11 @@ import time
 from statistics import median
 from typing import Any, Dict, List, Optional
 import os
-from blockchain_backend.utils.config import MINE_RATE, SECONDS, NETWORK_ID
+from blockchain_backend.utils.config import SECONDS, NETWORK_ID
 from blockchain_backend.utils.crypto_hash import crypto_hash
 from blockchain_backend.utils.hex_to_binary import hex_to_binary
 from blockchain_backend.utils.merkle import merkle_root
+from blockchain_backend.utils.helpers import normalize_timestamp
 
 # Genesis block (static, shared by all nodes)
 GENESIS_DATA: Dict[str, Any] = {
@@ -91,18 +92,24 @@ class Block:
             and self.height == other.height
         )
 
-    def to_json(self) -> Dict[str, Any]:
-        """Serialize the block into a dictionary of its attributes."""
+# blockchain_core.py (where you produce chain JSON)
+    def to_json(self):
+        """
+        Serialize this Block instance as a JSON-serializable dict.
+        IMPORTANT: do NOT iterate or reference self.chain here — that belongs to Blockchain.
+        """
+        # safe get attributes with sensible defaults
         return {
-            "timestamp": self.timestamp,
-            "last_hash": self.last_hash,
-            "hash": self.hash,
-            "data": self.data,
-            "difficulty": self.difficulty,
-            "nonce": self.nonce,
-            "merkle": self.merkle,
-            "height": self.height,
+            "version": getattr(self, "version", 1),
+            "last_hash": getattr(self, "last_hash", None),
+            "hash": getattr(self, "hash", None),
+            "merkle": getattr(self, "merkle", None),
+            "timestamp": int(getattr(self, "timestamp", 0)) if getattr(self, "timestamp", None) is not None else 0,
+            "difficulty": getattr(self, "difficulty", None),
+            "nonce": getattr(self, "nonce", None),
+            "data": getattr(self, "data", []) or [],
         }
+
     
     def to_header(self, data):
         return {

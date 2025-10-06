@@ -59,9 +59,32 @@ class Blockchain:
     # -------------------------
     # Serialization
     # -------------------------
-    def to_json(self) -> List[Dict[str, Any]]:
-        """Serialize the blockchain into a list of block dicts."""
-        return [block.to_json() for block in self.chain]
+    def to_json(self):
+        """
+        Return a list of block dicts ordered by ascending height.
+        Each block dict will include an explicit `height` field.
+        Also normalizes timestamps if they look like nanoseconds/microseconds.
+        """
+        out = []
+        for idx, block in enumerate(self.chain):
+            # Block.to_json() returns block fields (without height)
+            bj = block.to_json() if hasattr(block, "to_json") else dict(block)
+            # set explicit height (index in chain)
+            bj["height"] = idx
+            # normalize timestamp heuristic: if timestamp looks like ns/micro, convert to seconds
+            try:
+                ts = int(bj.get("timestamp", 0) or 0)
+                if ts > 10**15:          # nanoseconds -> seconds
+                    bj["timestamp"] = ts // 1_000_000_000
+                elif ts > 10**12:       # microseconds -> seconds
+                    bj["timestamp"] = ts // 1_000_000
+                else:
+                    bj["timestamp"] = ts
+            except Exception:
+                # leave as-is if we can't parse
+                pass
+            out.append(bj)
+        return out
 
     @staticmethod
     def from_json(chain_json: Sequence[Dict[str, Any]]) -> "Blockchain":

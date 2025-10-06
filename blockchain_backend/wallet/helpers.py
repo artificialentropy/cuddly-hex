@@ -7,6 +7,36 @@ from blockchain_backend.wallet.wallet import Wallet
 from blockchain_backend.utils.config import STARTING_BALANCE, MINING_REWARD_INPUT
 
 WALLET_FILE = "wallets.json"
+# wallet/tx_serialization.py
+# blockchain_backend/wallet/tx_serialization.py
+from typing import Tuple, List, Union
+
+def serialize_signature(sig_tuple: Union[Tuple[int, int], List[int]]) -> List[str]:
+    """
+    Convert (r, s) ints to hex-string pair for safe JSON transport.
+    """
+    r, s = sig_tuple
+    return [format(int(r), "x"), format(int(s), "x")]
+
+def parse_signature(sig_list: List[Union[str, int]]) -> Tuple[int, int]:
+    """
+    Convert ['hex_r', 'hex_s'] or ['decimal_r','decimal_s'] to (int_r, int_s).
+    Accepts ints already too.
+    """
+    if not sig_list or len(sig_list) < 2:
+        raise ValueError("signature must contain two components")
+    def to_int(x):
+        if isinstance(x, int):
+            return x
+        xs = str(x)
+        if xs.startswith("0x"):
+            return int(xs, 16)
+        # if looks like hex (only hex chars) treat as hex
+        if all(c in "0123456789abcdefABCDEF" for c in xs):
+            return int(xs, 16)
+        return int(xs, 10)
+    return (to_int(sig_list[0]), to_int(sig_list[1]))
+
 
 
 def load_wallets():

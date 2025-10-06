@@ -10,9 +10,9 @@ Helper utilities for the miner:
 
 from __future__ import annotations
 import json, time, hashlib, requests, os
-from typing import Any, Dict, List, Tuple, Callable, Optional
+from typing import Any, Dict, List, Tuple, Callable, Optional, Union
 import os
-
+import time
 MIN_DIFFICULTY = int(os.getenv("MIN_DIFFICULTY", "1"))
 MAX_DIFFICULTY = int(os.getenv("MAX_DIFFICULTY", "64"))
 DIFFICULTY_STEP_UP = int(os.getenv("DIFFICULTY_STEP_UP", "1"))
@@ -151,17 +151,51 @@ def adjust_difficulty(parent_diff: int, parent_ts_ns: int, now_ts_ns: int, mine_
         return max(pd - DIFFICULTY_STEP_DOWN, MIN_DIFFICULTY)
 
 # ---------- reward tx builder ----------
-def build_reward_tx(miner_addr: str,
-                    mempool: List[Dict[str,Any]],
-                    mining_reward_input: Dict[str,Any],
-                    asset_id: str,
-                    reward_amount: int) -> Dict[str,Any]:
-    return {
-        "id": f"cb-{int(time.time()*1000)}",
-        "input": mining_reward_input,
-        "output": { miner_addr: { str(asset_id): int(reward_amount) } },
-        "metadata": {"miner": miner_addr}
+
+def build_reward_tx(
+    miner_address: str,
+    mempool: Optional[List[Dict[str, Any]]] = None,
+    mining_reward_input: Union[str, Dict[str, Any]] = "*--official-mining-reward--*",
+    reward_asset: str = "COIN",
+    mining_reward_amount: int = 50,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Build a canonical reward (coinbase) transaction for miners.
+
+    - miner_address: destination address (string).
+    - mempool: list of mempool tx dicts (optional) — used to sum fees.
+    - mining_reward_input: the sentinel value the node uses to detect reward tx.
+      This should be passed-through *exactly* as returned by node /health (string or dict).
+      IMPORTANT: We DO NOT add timestamp or other keys to this sentinel object.
+    - reward_asset: currency string (e.g. "COIN").
+    - mining_reward_amount: base block reward (int).
+    - metadata: optional metadata to add to the tx (e.g. {"miner": miner_address}).
+
+    Returns a JSON-serializable tx dict accepted by the node.
+    """
+    # Sum fees from mempool (defensive)
+    total_fees = 0
+    if mempool:
+        for tx in mempool:
+            try:
+                inp = tx.get("input", {}) or {}
+                fee = int(inp.get("fee", 0))
+                total_fees += fee
+            except Exception:
+                # ignore malformed fee fields
+                continue
+
+    amount = int(mining_reward_amount) + int(total_fees)
+
+    tx = {
+        "id": f"cb-{int(time.time())}",          # unique-ish id for debugging
+        "input": mining_reward_input,            # <<< MUST be the sentinel exactly; no extra keys
+        "output": {miner_address: {reward_asset: amount}},
+        "metadata": dict(metadata or {"miner": miner_address})
     }
+
+    return tx
 
 # ---------- HTTP helpers ----------
 def wait_ready(sess: requests.Session, base: str) -> Dict[str, Any]:

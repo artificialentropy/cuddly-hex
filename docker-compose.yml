@@ -74,7 +74,7 @@ services:
       ROLE: ROOT
       PYTHONPATH: /app
       SELF_BASE: http://node0:5000
-      PEER: "False"
+      PEER: False
       ROOT_HOST: node0
       ROOT_PORT: 5000
       FLASK_DEBUG: "1"
@@ -103,10 +103,10 @@ services:
     env_file:
       - .env
     environment:
-      ROLE: ROOT
+      ROLE: VALIDATOR
       PYTHONPATH: /app
       SELF_BASE: http://node1:5000
-      PEER: "True"
+      PEER: True
       ROOT_HOST: node0
       ROOT_PORT: 5000
       FLASK_DEBUG: "1"
@@ -137,10 +137,10 @@ services:
     env_file:
       - .env
     environment:
-      ROLE: ROOT
+      ROLE: VALIDATOR
       PYTHONPATH: /app
       SELF_BASE: http://node2:5000
-      PEER: "True"
+      PEER: True
       ROOT_HOST: node0
       ROOT_PORT: 5000
       FLASK_DEBUG: "1"
@@ -171,10 +171,10 @@ services:
     env_file:
       - .env
     environment:
-      ROLE: ROOT
+      ROLE: VALIDATOR
       PYTHONPATH: /app
       SELF_BASE: http://node3:5000
-      PEER: "True"
+      PEER: True
       ROOT_HOST: node0
       ROOT_PORT: 5000
       FLASK_DEBUG: "0"
@@ -191,40 +191,6 @@ services:
     healthcheck:
       test: >
         bash -lc "curl -sf http://127.0.0.1:5000/health | grep -E '\"ready\": *true|\"ok\": *true'"
-      interval: 5s
-      timeout: 3s
-      retries: 50
-      start_period: 10s
-
-  # --- external miner service based on the same node image ---
-  miner:
-    build:
-      context: .
-      dockerfile: Dockerfile_blch
-    container_name: miner
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      ROLE: MINER
-      PYTHONPATH: /app
-      # Point miner at whichever node you want; example uses node3:
-      MINER_NODE_URL: "http://node3:5000"
-      MINER_REWARD_ADDRESS: "miner-demo-addr"
-      MINER_TOKEN: secret123
-      MINER_INTERVAL: 5
-      MINER_ALLOW_EMPTY: "0"
-      MINER_DEBUG_DIR: "/app/block_data"
-      # tune fail/backoff behaviour:
-      MINER_MAX_FAILS: 20
-    depends_on:
-      - node3
-    volumes:
-      # host ./block_data <-> container /app/block_data so debug files are readable on host
-      - ./block_data:/app/block_data
-    healthcheck:
-      test: >
-        bash -lc "curl -sf ${MINER_NODE_URL:-http://node3:5000}/health | grep -E '\"ready\": *true|\"ok\": *true' || exit 1"
       interval: 5s
       timeout: 3s
       retries: 50

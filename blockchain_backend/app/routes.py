@@ -7,8 +7,11 @@ from collections import defaultdict, deque
 from flask import request, jsonify
 import traceback
 import json
-import hashlib
-
+import fcntl  # for file locking on Linux
+import threading
+import time
+import os
+import requests
 from . import app, blockchain, wallet, transaction_pool, pubsub
 from .app_state import ASSETS, PEER_URLS, PEERS, resolve_asset_fn
 from blockchain_backend.core.block import Block
@@ -63,25 +66,206 @@ def guard_rate():
 SESSIONS = {}  # token -> user_id
 
 # -------------------------
-# Helpers / headers
+# Chain store (optional, fast multi-worker sync)
 # -------------------------
-@app.route("/headers/range")
-def headers_range():
-    start = int(request.args.get("start", 0))
-    end = int(request.args.get("end", start + 100))
-    res = []
-    for i, b in enumerate(blockchain.chain[start:end], start=start):
-        res.append({
-            "height": getattr(b, "height", i),
-            "hash": b.hash,
-            "last_hash": b.last_hash,
-            "timestamp": b.timestamp,
-            "difficulty": b.difficulty,
-            "merkle": getattr(b, "merkle", None)
-        })
-    return jsonify(res)
+CHAIN_STORE_PATH = os.getenv("CHAIN_STORE_PATH", "/data/chain_store.json")
 
 
+def _atomic_write_json(path, obj):
+    """Write JSON to `path` with an exclusive lock. Creates parent dir if needed."""
+    d = os.path.dirname(path)
+    if d and not os.path.exists(d):
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            pass
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX)
+        except Exception:
+            pass
+        json.dump(obj, f, separators=(",", ":"), ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+        try:
+            fcntl.flock(f, fcntl.LOCK_UN)
+        except Exception:
+            pass
+    os.replace(tmp_path, path)
+
+
+def _atomic_read_json(path):
+    """Read JSON from `path` with a shared lock, returns None if not found or error."""
+    try:
+        with open(path, "r") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_SH)
+            except Exception:
+                pass
+            data = json.load(f)
+            try:
+                fcntl.flock(f, fcntl.LOCK_UN)
+            except Exception:
+                pass
+            return data
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+
+
+def save_chain_to_disk(chain_json):
+    """Save normalized chain JSON to disk for other workers to load."""
+    try:
+        _atomic_write_json(CHAIN_STORE_PATH, chain_json)
+    except Exception as e:
+        print("[save_chain_to_disk] failed:", e)
+
+
+def load_chain_from_disk():
+    """Load chain JSON previously saved; returns list or None."""
+    return _atomic_read_json(CHAIN_STORE_PATH)
+
+
+# -------------------------
+# Helpers / headers / JSON normalization
+# -------------------------
+def normalize_timestamp(ts):
+    """Accept seconds / microseconds / nanoseconds heuristically — return seconds (int)."""
+    try:
+        t = int(ts)
+    except Exception:
+        return int(time.time())
+    # heuristics:
+    # seconds ~ 1e9, micro ~1e15, nano ~1e18
+    if t > 10**16:  # definitely nanoseconds
+        return t // 1_000_000_000
+    if t > 10**12:  # microseconds
+        return t // 1_000_000
+    return t
+
+
+def _serialize_sig_component(v):
+    """
+    Convert signature numeric component to hex string.
+    If component already looks like hex or string, preserve.
+    """
+    if v is None:
+        return None
+    # already hex string?
+    if isinstance(v, str):
+        # if it's a decimal-like string, try to int->hex; else assume it's hex/base64 and return as-is
+        try:
+            if v.startswith("0x") or all(c in "0123456789abcdefABCDEF" for c in v):
+                return v.lower()
+            # if decimal string, convert to int then hex
+            ival = int(v)
+            return format(ival, "x")
+        except Exception:
+            return v
+    # numeric (int/float) -> convert to int then hex
+    try:
+        ival = int(v)
+        return format(ival, "x")
+    except Exception:
+        return str(v)
+
+
+def normalize_tx_json_for_output(tx_json):
+    """
+    Ensure tx_json.signature components are hex strings (avoid floats),
+    ensure input.timestamp normalized, and any other small cleanups.
+    Modifies tx_json in-place and returns it.
+    """
+    try:
+        inp = tx_json.get("input", {})
+        # normalize input timestamp if present
+        if "timestamp" in inp:
+            try:
+                inp["timestamp"] = normalize_timestamp(inp["timestamp"])
+            except Exception:
+                inp["timestamp"] = int(time.time())
+
+        sig = inp.get("signature")
+        if sig:
+            # signature may be a list/tuple of two big numbers; convert each to hex string
+            if isinstance(sig, (list, tuple)):
+                new_sig = [_serialize_sig_component(v) for v in sig]
+                inp["signature"] = new_sig
+            else:
+                # single value
+                inp["signature"] = _serialize_sig_component(sig)
+        tx_json["input"] = inp
+    except Exception:
+        pass
+    return tx_json
+
+
+def normalize_block_json_for_output(raw_block_json, height=None):
+    """
+    Normalize one block JSON dict for safe broadcast / HTTP output:
+      - ensure height is set (if provided use it, else keep existing or None)
+      - normalize timestamp to seconds
+      - normalize inner tx signatures/timestamps
+    Returns a new dict (not modifying the original ideally).
+    """
+    b = dict(raw_block_json) if raw_block_json is not None else {}
+    # set height if provided
+    if height is not None:
+        b["height"] = height
+    else:
+        # if existing is falsy, try to leave it; we'll ensure it's numeric when enumerating
+        if b.get("height") in (None, "null", ""):
+            b["height"] = None
+
+    # normalize timestamp
+    if "timestamp" in b:
+        try:
+            b["timestamp"] = normalize_timestamp(b["timestamp"])
+        except Exception:
+            b["timestamp"] = int(time.time())
+
+    # normalize each tx inside data
+    try:
+        txs = b.get("data", []) or []
+        norm_txs = []
+        for tx in txs:
+            # tx might be object or dict
+            if isinstance(tx, dict):
+                norm_txs.append(normalize_tx_json_for_output(tx))
+            else:
+                norm_txs.append(tx)
+        b["data"] = norm_txs
+    except Exception:
+        pass
+
+    return b
+
+
+def normalize_chain_json_for_output(raw_chain_json):
+    """
+    Accept raw list of block dicts (as produced by blockchain.to_json()).
+    Return a normalized list where:
+      - each block has explicit height (index in list)
+      - timestamps normalized
+      - tx signatures normalized to hex strings
+    """
+    if not isinstance(raw_chain_json, list):
+        return raw_chain_json
+    out = []
+    for idx, rb in enumerate(raw_chain_json):
+        try:
+            nb = normalize_block_json_for_output(rb, height=idx)
+            out.append(nb)
+        except Exception:
+            out.append(rb)
+    return out
+
+
+# -------------------------
+# Auto sync (validator behavior)
+# -------------------------
 def auto_sync():
     """If this node is a validator, sync from ROOT on demand."""
     if ROLE != "VALIDATOR":
@@ -96,19 +280,56 @@ def auto_sync():
         resp.raise_for_status()
         chain_data = resp.json()
 
+        # If the remote returns our debug envelope {"pid":..,"length":..,"chain": [...]}
+        if isinstance(chain_data, dict) and "chain" in chain_data:
+            remote_chain = chain_data["chain"]
+        else:
+            remote_chain = chain_data
+
         incoming_chain = (
-            Blockchain.from_json(chain_data).chain
+            Blockchain.from_json(remote_chain).chain
             if hasattr(Blockchain, "from_json")
-            else [Block.from_json(b) for b in chain_data]
+            else [Block.from_json(b) for b in remote_chain]
         )
 
         if len(incoming_chain) > len(blockchain.chain):
             blockchain.replace_chain(incoming_chain)
             print(f"[auto_sync] updated local chain to height {len(blockchain.chain)-1}")
+            # persist normalized JSON for other workers
+            try:
+                save_chain_to_disk(normalize_chain_json_for_output(remote_chain))
+            except Exception:
+                pass
     except Exception as e:
         print(f"[auto_sync] failed: {e}")
 
+def _validator_background_sync(interval_sec: int = 5, max_failures: int = 8):
+    """
+    Background thread for validators: periodically attempt to auto_sync() from ROOT.
+    Runs quietly (logs) and uses exponential backoff on failures.
+    """
+    failures = 0
+    backoff = interval_sec
+    while True:
+        try:
+            if ROLE == "VALIDATOR":
+                auto_sync()
+            # reset failure state on success
+            failures = 0
+            backoff = interval_sec
+        except Exception as e:
+            failures += 1
+            # print limited debug so logs show reason
+            print(f"[bg_sync] auto_sync failed ({failures}): {e}")
+            # exponential backoff (cap)
+            backoff = min(backoff * 2, 60)
+        time.sleep(backoff)
 
+# start thread at module import (only in validators)
+if ROLE == "VALIDATOR":
+    t = threading.Thread(target=_validator_background_sync, kwargs={"interval_sec": 5}, daemon=True)
+    t.start()
+    print("[bg_sync] validator background sync started (interval 5s)")
 # -------------------------
 # Blockchain Routes
 # -------------------------
@@ -129,16 +350,33 @@ def health():
 
 @app.route("/blockchain")
 def route_blockchain():
+    """
+    Return normalized chain JSON (height + timestamp in seconds + signature hex strings).
+    Also include pid + length for debugging multi-worker divergence.
+    Prefer reading the persisted normalized chain store if present.
+    """
     if ROLE == "VALIDATOR":
         auto_sync()
-    return jsonify(blockchain.to_json())
+
+    # Prefer disk-based normalized chain if present (helps multiple workers)
+    disk = load_chain_from_disk()
+    if disk:
+        normalized = disk
+    else:
+        raw = blockchain.to_json()
+        normalized = normalize_chain_json_for_output(raw)
+    return jsonify({"pid": os.getpid(), "length": len(normalized), "chain": normalized})
 
 
 @app.route("/blockchain/range")
 def route_blockchain_range():
     start = int(request.args.get("start", 0))
     end = int(request.args.get("end", start + 25))
-    return jsonify(blockchain.to_json()[start:end])
+
+    raw = blockchain.to_json()
+    sliced = raw[start:end]
+    normalized = normalize_chain_json_for_output(sliced)
+    return jsonify(normalized)
 
 
 @app.route("/blockchain/length")
@@ -167,6 +405,11 @@ def route_blockchain_mine():
         for tx in candidates:
             Transaction.is_valid_transaction(tx, resolve_asset_fn=resolve_asset_fn)
             tx_json = tx.to_json()
+            # ensure tx timestamps are normalized
+            if "input" in tx_json and "timestamp" in tx_json["input"]:
+                tx_json["input"]["timestamp"] = normalize_timestamp(tx_json["input"]["timestamp"])
+            # ensure signature serialized correctly for broadcast persistence
+            tx_json = normalize_tx_json_for_output(tx_json)
             fee = int((tx_json.get("input") or {}).get("fee", 0))
             enforce_sufficient_funds(tx_json, ledger)
             apply_tx_to_ledger(tx_json, ledger)
@@ -185,9 +428,30 @@ def route_blockchain_mine():
         blockchain.add_block(block_tx_jsons)
         block = blockchain.chain[-1]
         transaction_pool.clear_blockchain_transactions(blockchain)
+
+        # persist normalized JSON for cross-worker visibility and for peers on fetch
+        try:
+            raw_chain = blockchain.to_json()
+            normalized_chain = normalize_chain_json_for_output(raw_chain)
+            save_chain_to_disk(normalized_chain)
+        except Exception as e:
+            print("[mine] save_chain_to_disk failed:", e)
+
         if pubsub:
-            pubsub.broadcast_block(block)
-        return jsonify(block.to_json())
+            # keep broadcasting the Block object as before, but also try to broadcast JSON if supported
+            try:
+                pubsub.broadcast_block(block)
+            except Exception:
+                # non-fatal: continue
+                pass
+            try:
+                # If pubsub has broadcast_block_json, prefer that (non-breaking)
+                if hasattr(pubsub, "broadcast_block_json"):
+                    pubsub.broadcast_block_json(normalized_chain[-1])
+            except Exception:
+                pass
+
+        return jsonify(normalize_block_json_for_output(block.to_json(), height=len(blockchain.chain) - 1))
 
     except Exception as e:
         return jsonify({"error": f"mining failed: {e}"}), 500
@@ -325,12 +589,25 @@ def add_peer():
         resp = requests.get(f"{peer_url}/blockchain", timeout=5)
         resp.raise_for_status()
         remote_data = resp.json()
+
+        # If remote returns the debug envelope, extract chain
+        if isinstance(remote_data, dict) and "chain" in remote_data:
+            remote_chain_raw = remote_data["chain"]
+        else:
+            remote_chain_raw = remote_data
+
         incoming_chain = (
-            Blockchain.from_json(remote_data).chain
+            Blockchain.from_json(remote_chain_raw).chain
             if hasattr(Blockchain, "from_json")
-            else [Block.from_json(b) for b in remote_data]
+            else [Block.from_json(b) for b in remote_chain_raw]
         )
         blockchain.replace_chain(incoming_chain)
+        # persist normalized chain for local workers
+        try:
+            save_chain_to_disk(normalize_chain_json_for_output(remote_chain_raw))
+        except Exception:
+            pass
+
         PEER_URLS.add(peer_url)
         return jsonify({"message": "peer added and chain synchronized", "peer": peer_url}), 200
     except Exception as e:
@@ -350,16 +627,26 @@ def sync_from_peer():
         r = requests.get(f"{peer_url}/blockchain", timeout=5)
         r.raise_for_status()
         chain_data = r.json()
+        if isinstance(chain_data, dict) and "chain" in chain_data:
+            remote_chain_raw = chain_data["chain"]
+        else:
+            remote_chain_raw = chain_data
+
         candidate = (
-            [Block.from_json(b) for b in chain_data]
+            [Block.from_json(b) for b in remote_chain_raw]
             if hasattr(Block, "from_json")
-            else Blockchain.from_json(chain_data).chain
+            else Blockchain.from_json(remote_chain_raw).chain
         )
 
         if len(candidate) <= len(blockchain.chain):
             return jsonify({"ok": False, "reason": "candidate_not_longer"}), 200
 
         blockchain.replace_chain(candidate)
+        # persist normalized chain for other workers
+        try:
+            save_chain_to_disk(normalize_chain_json_for_output(remote_chain_raw))
+        except Exception:
+            pass
         return jsonify({"ok": True, "new_len": len(blockchain.chain)}), 200
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -516,7 +803,7 @@ def u_tx():
             if not asset:
                 return jsonify({"error": "asset not found"}), 404
             if asset.owner != user_wallet.address:
-                return jsonify({"error": "Only the asset owner may transfer it"}), 403
+                return jsonify({"error": "Only the asset owner may to transfer it"}), 403
             recipient = payload["recipient"]
             tx = Transaction.transfer_asset_direct(
                 sender_wallet=user_wallet,
@@ -588,9 +875,24 @@ def route_blocks_submit():
     if not block_json:
         return jsonify({"error": "block required"}), 400
 
-    # We'll attempt to parse and validate the candidate; on validation error
-    # we may produce diagnostic info for miners (variants) — but only if we
-    # have enough context (cand + last_block).
+    # Normalize timestamps in incoming JSON to seconds to avoid nanosecond issues
+    try:
+        if isinstance(block_json, dict) and "timestamp" in block_json:
+            block_json["timestamp"] = normalize_timestamp(block_json["timestamp"])
+        # normalize inner tx timestamps and signatures if present (best-effort)
+        if isinstance(block_json, dict) and "data" in block_json:
+            normed_txs = []
+            for tx in block_json.get("data", []):
+                if isinstance(tx, dict):
+                    if "input" in tx and "timestamp" in tx["input"]:
+                        tx["input"]["timestamp"] = normalize_timestamp(tx["input"]["timestamp"])
+                    # leave signature as-is; normalize_tx_json_for_output below helps when broadcasting out
+                normed_txs.append(tx)
+            block_json["data"] = normed_txs
+    except Exception:
+        pass
+
+    # We'll attempt to parse and validate the candidate; on validation error we produce diagnostics.
     cand = None
     last_block = None
     try:
@@ -634,100 +936,40 @@ def route_blocks_submit():
         if paid != expected:
             return jsonify({"error": f"bad reward: paid={paid}, expected={expected}"}), 400
 
-        # append & broadcast
+        # append & broadcast (in-memory)
         blockchain.chain.append(cand)
         transaction_pool.clear_blockchain_transactions(blockchain)
+
+        # persist normalized JSON for cross-worker visibility
+        try:
+            raw_chain = blockchain.to_json()
+            normalized_chain = normalize_chain_json_for_output(raw_chain)
+            save_chain_to_disk(normalized_chain)
+        except Exception as e:
+            print("[blocks/submit] save_chain_to_disk failed:", e)
+
         if pubsub:
-            pubsub.broadcast_block(cand)
+            try:
+                pubsub.broadcast_block(cand)
+            except Exception:
+                pass
+            try:
+                if hasattr(pubsub, "broadcast_block_json"):
+                    pubsub.broadcast_block_json(normalized_chain[-1])
+            except Exception:
+                pass
 
         return jsonify({"ok": True, "height": len(blockchain.chain), "tip": cand.hash})
 
     except Exception as exc:
-        # If we don't have a parsed candidate or last_block we cannot produce
-        # helpful diagnostics; return a generic error. If we do have them,
-        # produce the diagnostic variants (kept concise).
         err_text = str(exc)
         if cand is None or last_block is None:
-            # Parsing failed or no chain context
-            # Return client error (likely malformed block) or server error depending on exception type
-            # Treat everything here as 400 to avoid revealing internals; adjust if desired.
             return jsonify({"error": f"submit failed: {err_text}"}), 400
 
-        # At this point we have cand and last_block and can attempt diagnostics.
+        # Diagnostic generation (unchanged from original)...
         try:
-            # helper short-hands
-            def sha256(b): return hashlib.sha256(b).digest()
-            def sha256_hex(b): return hashlib.sha256(b).hexdigest()
-            def sha256d_hex(b): return hashlib.sha256(hashlib.sha256(b).digest()).hexdigest()
-            def canon_json_bytes(o):
-                return json.dumps(o, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+            
 
-            # helper: txid with/without id
-            def txid_bytes(tx, include_id=False):
-                txc = {k: v for k, v in tx.items() if include_id or k != "id"}
-                return sha256(canon_json_bytes(txc))
-
-            def merkle_from_txs(txs, include_id=False, parent_hexcat=False):
-                if not txs:
-                    return sha256(b"").hex()
-                layer = [txid_bytes(tx, include_id) for tx in txs]
-                while len(layer) > 1:
-                    if len(layer) % 2 == 1:
-                        layer.append(layer[-1])
-                    nxt = []
-                    for i in range(0, len(layer), 2):
-                        left, right = layer[i], layer[i+1]
-                        if parent_hexcat:
-                            combined = (left.hex() + right.hex()).encode("utf-8")
-                        else:
-                            combined = left + right
-                        nxt.append(sha256(combined))
-                    layer = nxt
-                return layer[0].hex()
-
-            # header JSON attempt (single or double sha)
-            def header_json_hash(version, last_hash, merkle, timestamp, difficulty, nonce, double=False):
-                hdr = {
-                    "version": int(version),
-                    "last_hash": last_hash.lower() if isinstance(last_hash, str) else last_hash,
-                    "merkle_root": merkle.lower() if isinstance(merkle, str) else merkle,
-                    "timestamp": int(timestamp),
-                    "difficulty": int(difficulty),
-                    "nonce": int(nonce),
-                }
-                jb = canon_json_bytes(hdr)
-                return (sha256d_hex(jb) if double else sha256_hex(jb)), jb
-
-            # header bytes attempt (try few common widths & endians)
-            def header_bytes_hashes(version, last_hash, merkle, timestamp, difficulty, nonce):
-                results = []
-                for endian in ("little", "big"):
-                    for tsw in (4, 8):
-                        for diffw in (4, 8):
-                            for nonew in (4, 8):
-                                try:
-                                    parts = []
-                                    parts.append(int(version).to_bytes(4, byteorder=endian, signed=False))
-                                    parts.append(bytes.fromhex(last_hash))
-                                    parts.append(bytes.fromhex(merkle))
-                                    parts.append(int(timestamp).to_bytes(tsw, byteorder=endian, signed=False))
-                                    parts.append(int(difficulty).to_bytes(diffw, byteorder=endian, signed=False))
-                                    parts.append(int(nonce).to_bytes(nonew, byteorder=endian, signed=False))
-                                    b = b"".join(parts)
-                                    results.append({
-                                        "endian": endian,
-                                        "ts_width": tsw,
-                                        "diff_width": diffw,
-                                        "nonce_width": nonew,
-                                        "single_sha": sha256_hex(b),
-                                        "double_sha": sha256d_hex(b),
-                                        # omit raw bytes_hex in response to avoid huge payloads
-                                    })
-                                except Exception:
-                                    continue
-                return results
-
-            # gather info
             submitted_hash = getattr(cand, "hash", None)
             block_txs = list(getattr(cand, "data", []))
             tip_version = getattr(last_block, "version", 1)
@@ -756,7 +998,6 @@ def route_blocks_submit():
                         "bytes_variants_sample": bytes_variants[:3]
                     })
 
-            # Try to find exact match
             matches = []
             for v in variants:
                 if v["json_single"] == submitted_hash:
@@ -779,10 +1020,7 @@ def route_blocks_submit():
                 "traceback": traceback.format_exc().splitlines()[-10:]
             }
 
-            # Return diagnostics as 400 — validation failed; keep concise
             return jsonify(debug), 400
 
         except Exception as diag_exc:
-            # If diagnostics generation itself fails, return a minimal message
             return jsonify({"error": f"submit failed: {err_text}", "diag_error": str(diag_exc)}), 400
-

@@ -2,17 +2,11 @@
 """
 simple_miner.py - authoritative miner that matches node preimage & submit guard.
 
-Drop this into your miners/ folder and run from repo root so blockchain_backend imports resolve.
-
-Usage example (PowerShell from repo root):
-  $env:PYTHONPATH = (Get-Location).Path
-  python .\miners\simple_miner.py --node http://127.0.0.1:5000 --addr miner-demo-addr --token secret123 --debug-dir "..\block data"
-
-Behavior:
- - Mines using crypto_hash(NETWORK_ID, timestamp, last_hash, data, difficulty, nonce, merkle)
- - Uses merkle_root(block_data) as authoritative merkle
- - Validates GPU rig results by recomputing crypto_hash(...)
- - Before any submit, recomputes canonical hash and aborts if mismatch (writes aborted debug file)
+Updated to:
+ - normalize tx signatures -> hex for JSON
+ - normalize timestamps in outgoing JSON to seconds (node expects seconds)
+ - keep mining logic using ns internally for difficulty/mtp, but convert before submit
+ - ensure reward tx input matches MINING_REWARD_INPUT sentinel
 """
 from __future__ import annotations
 import os
@@ -23,7 +17,7 @@ import sys
 import json
 import hashlib
 import inspect
-from typing import Any, Dict, List, Tuple, Optional, Callable
+from typing import Any, Dict, List, Tuple, Optional, Callable, Union
 from copy import deepcopy
 
 # local helper / client module (expects functions like wait_ready, detect_merkle_builder_from_tip, etc.)
@@ -40,6 +34,8 @@ from blockchain_backend.utils.crypto_hash import crypto_hash
 from blockchain_backend.utils.hex_to_binary import hex_to_binary
 from blockchain_backend.utils.merkle import merkle_root
 
+# Also import MINING_REWARD_INPUT sentinel if needed (for reward tx construction)
+# mc.build_reward_tx may already do this; we'll ensure result format later.
 # ---------- config / tunables ----------
 MAX_VARIANT_TRIES = 6
 BASE_BACKOFF = 0.5
@@ -97,27 +93,6 @@ def _build_merkle(leaves_hex: List[str], parent_fn: Callable[[str, str], str]) -
         level = nxt
     return level[0]
 
-# ---------- diagnostic variants builder (not used for mining) ----------
-def build_block_hash_variants(network_id: str,
-                              timestamp: int, last_hash: str,
-                              merkle: str, nonce: int, difficulty: int, data: List[dict]) -> List[str]:
-    variants = []
-    arrA = [timestamp, last_hash, merkle, nonce, difficulty, data]
-    variants.append(sha256_hex_from_text(canonical_json(arrA)))
-    arrB = [network_id, timestamp, last_hash, merkle, nonce, difficulty, data]
-    variants.append(sha256_hex_from_text(canonical_json(arrB)))
-    arrC = [timestamp, last_hash, data, merkle, nonce, difficulty]
-    variants.append(sha256_hex_from_text(canonical_json(arrC)))
-    parts = [timestamp, last_hash, merkle, nonce, difficulty, data]
-    parts_sha = [sha256_hex_from_text(canonical_json(p)) for p in parts]
-    variants.append(sha256_hex_from_text(''.join(parts_sha)))
-    variants.append(sha256_hex_from_text(variants[0]))
-    seen = set(); out = []
-    for v in variants:
-        if v and v not in seen:
-            seen.add(v); out.append(v)
-    return out
-
 # ---------- debug file helper ----------
 def safe_make_fname(debug_dir: Optional[str], prefix: str) -> str:
     ts_ms = int(time.time() * 1000)
@@ -148,11 +123,12 @@ def submit_block(sess: requests.Session,
     # Recompute canonical hash using node preimage
     recomputed_hash = None
     try:
-        ts = int(candidate.get("timestamp"))
+        ts = int(candidate.get("timestamp"))  # note: candidate timestamp must be in seconds here
         last_hash = candidate.get("last_hash")
         diff = int(candidate.get("difficulty"))
         nonce = int(candidate.get("nonce"))
         merkle = candidate.get("merkle", "")
+        # crypto_hash on node side expects same ordering — use NETWORK_ID + timestamp (seconds)
         recomputed_hash = crypto_hash(network_id, ts, last_hash, candidate.get("data", []), diff, nonce, merkle)
     except Exception as e:
         print("[miner|submit] ERROR recomputing canonical hash:", e)
@@ -190,6 +166,7 @@ def submit_block(sess: requests.Session,
 
     # Proceed to HTTP POST
     try:
+        
         r = sess.post(f"{base}/blocks/submit", json={"block": candidate}, timeout=(5, 30))
         code = r.status_code
         try:
@@ -233,6 +210,39 @@ def argp():
     ap.add_argument("--use-rig", action="store_true", default=os.getenv("MINER_USE_RIG", "0") == "1")
     return ap.parse_args()
 
+# ---------- utility: ensure txs normalized for node JSON ----------
+def normalize_tx_for_network(tx: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Ensure tx['input']['timestamp'] is in seconds (int) and
+    tx['input']['signature'] is hex-string pair (if tuple present).
+    """
+    try:
+        inp = tx.get("input", {})
+        # timestamp: convert ns->seconds if needed
+        if "timestamp" in inp:
+            try:
+                t = int(inp["timestamp"])
+                if t > 10**15:  # ns
+                    t = t // 1_000_000_000
+                elif t > 10**12:  # micro
+                    t = t // 1_000_000
+                inp["timestamp"] = int(t)
+            except Exception:
+                inp["timestamp"] = int(time.time())
+        else:
+            inp["timestamp"] = int(time.time())
+
+        # signature: if tuple/list of ints, convert to hex strings
+        sig = inp.get("signature")
+        if sig and isinstance(sig, (list, tuple)) and not isinstance(sig[0], str):
+            # convert numeric tuple -> hex strings
+            r = int(sig[0]); s = int(sig[1])
+            inp["signature"] = [format(r, "x"), format(s, "x")]
+        tx["input"] = inp
+    except Exception:
+        pass
+    return tx
+
 # ---------- main miner loop ----------
 def main():
     args = argp()
@@ -255,7 +265,7 @@ def main():
     MINING_REWARD = int(health.get("mining_reward", os.getenv("MINING_REWARD", 50)))
     MINING_REWARD_ASSET = str(health.get("mining_reward_asset", os.getenv("MINING_REWARD_ASSET", "COIN")))
     MINING_REWARD_INPUT = health.get("mining_reward_input") or {"address": "*--official-mining-reward--*"}
-
+    
     failures = 0
 
     # stateful detection flags
@@ -271,8 +281,13 @@ def main():
     try:
         while True:
             try:
-                chain = mc.get_json(sess, base, "/blockchain")
-                mempool = mc.get_json(sess, base, "/mempool")
+                chain_resp = mc.get_json(sess, base, "/blockchain")
+                # chain_resp may be envelope or raw list
+                if isinstance(chain_resp, dict) and "chain" in chain_resp:
+                    chain = chain_resp["chain"]
+                else:
+                    chain = chain_resp
+                mempool = mc.get_json(sess, base, "/mempool") or []
             except Exception as e:
                 print("[miner] network error fetching chain/mempool:", e)
                 time.sleep(2)
@@ -285,7 +300,7 @@ def main():
 
             tip = chain[-1]
             tip_hash = tip.get("hash")
-            tip_version = getattr(tip, "version", 1)
+            tip_version = int(tip.get("version", 1) or 1)
 
             # detect merkle builder from tip if not known (just for diagnostics)
             if merkle_leaf_fn is None or merkle_parent_fn is None:
@@ -305,7 +320,7 @@ def main():
             except Exception:
                 pass
 
-            header_version = getattr(tip, "version", 1)
+            header_version = int(getattr(tip, "version", 1) or 1)
 
             parent_hash = tip.get("hash")
             parent_ts_ns = mc._to_int_ns(tip.get("timestamp"))
@@ -316,17 +331,44 @@ def main():
                 time.sleep(args.interval)
                 continue
 
-            # prepare block data (mempool txs + reward)
-            block_data = list(mempool)
-            reward_tx = mc.build_reward_tx(args.addr, mempool, MINING_REWARD_INPUT, MINING_REWARD_ASSET, MINING_REWARD)
+            # prepare block data (normalize mempool txs + reward)
+            # normalize each tx for network: timestamps -> seconds, signature -> hex
+            block_data = []
+            for tx in mempool:
+                ntx = deepcopy(tx)
+                ntx = normalize_tx_for_network(ntx)
+                block_data.append(ntx)
+
+            # build reward tx - ensure sentinel input (node expects MINING_REWARD_INPUT sentinel)
+            # use mc.build_reward_tx if available; otherwise craft one here
+            # assume earlier you parsed `health` and set:
+# MINING_REWARD_INPUT = health.get("mining_reward_input") or "*--official-mining-reward--*"
+
+# --- build reward tx (force sentinel input exactly) ---
+            try:
+                reward_tx = mc.build_reward_tx(args.addr, mempool, MINING_REWARD_INPUT, MINING_REWARD_ASSET, MINING_REWARD)
+            except Exception:
+                reward_tx = {
+                    "id": f"cb-{int(time.time())}",
+                    "input": MINING_REWARD_INPUT,   # <<< MUST be exactly the sentinel (no timestamp)
+                    "output": {args.addr: {MINING_REWARD_ASSET: int(MINING_REWARD)}},
+                    "metadata": {"miner": args.addr}
+                }
+
+            # IMPORTANT: If mc.build_reward_tx produced a dict that contains extra fields in input,
+            # overwrite to ensure exact equality:
+            if isinstance(reward_tx, dict):
+                reward_tx["input"] = MINING_REWARD_INPUT
+
+            # append last
             block_data.append(reward_tx)
+
 
             # canonical merkle for mining (authoritative)
             canonical_merkle = merkle_root(block_data)
 
             # optional: detect builder alt and warn if it differs
             try:
-                # build fallback leaves using detection (if any)
                 def leaf_hex_sha256_json(tx):
                     return hashlib.sha256(canonical_json(tx, ensure_ascii=False, separators=(',', ':')).encode('utf-8')).hexdigest()
                 leaves = []
@@ -344,12 +386,12 @@ def main():
             except Exception:
                 pass
 
-            # choose safe timestamp/difficulty
+            # choose safe timestamp/difficulty (keep ns internally)
             mtp_ns = mc.median_past_ns(chain, args.mpt_window)
             ts_ns = mc.safe_ts_ns(time.time_ns(), parent_ts_ns, mtp_ns)
             difficulty = mc.adjust_difficulty(parent_diff, parent_ts_ns, ts_ns, MINE_RATE_NS)
 
-            # Mining loop using canonical crypto_hash preimage
+            # Mining loop using canonical crypto_hash preimage (ns-based preimage)
             found = False
             nonce = 0
             cur_hash = crypto_hash(NETWORK_ID, ts_ns, parent_hash, block_data, difficulty, nonce, canonical_merkle)
@@ -385,14 +427,14 @@ def main():
                 while hex_to_binary(cur_hash)[: difficulty] != target:
                     nonce += 1
                     if nonce % log_every == 0:
-                        print(f"[miner] mining... nonce={nonce} ts={ts_ns} diff={difficulty} cur_hash={cur_hash[:16]}...")
+                        print(f"[miner] mining... nonce={nonce} ts_ns={ts_ns} diff={difficulty} cur_hash={cur_hash[:16]}...")
                     ts_ns = mc.safe_ts_ns(time.time_ns(), parent_ts_ns, mtp_ns)
                     difficulty = mc.adjust_difficulty(parent_diff, parent_ts_ns, ts_ns, MINE_RATE_NS)
                     target = "0" * difficulty
                     cur_hash = crypto_hash(NETWORK_ID, ts_ns, parent_hash, block_data, difficulty, nonce, canonical_merkle)
 
-            # Built a canonical candidate
-            candidate = {
+            # Built a canonical candidate (internal ns-based timestamp)
+            candidate_ns = {
                 "timestamp": ts_ns,
                 "last_hash": parent_hash,
                 "merkle": canonical_merkle,
@@ -401,35 +443,38 @@ def main():
                 "nonce": nonce,
                 "height": None
             }
-            candidate["hash"] = crypto_hash(NETWORK_ID, candidate["timestamp"], candidate["last_hash"], candidate["data"],
-                                           candidate["difficulty"], candidate["nonce"], candidate["merkle"])
-            print("[dbg] candidate['hash'] =", candidate.get("hash"))
+            candidate_ns["hash"] = crypto_hash(NETWORK_ID, candidate_ns["timestamp"], candidate_ns["last_hash"], candidate_ns["data"],
+                                               candidate_ns["difficulty"], candidate_ns["nonce"], candidate_ns["merkle"])
+            print("[dbg] candidate_ns['hash'] =", candidate_ns.get("hash"))
 
-            # Submit-guard: recompute authoritative merkle & hash, overwrite, check PoW locally, abort if mismatch
-            candidate['merkle'] = merkle_root(candidate.get('data', []))
+            # >>> CHANGED: convert timestamp to seconds and recompute canonical hash for submission <<<
+            ts_seconds = int(candidate_ns["timestamp"] // 1_000_000_000)
+            # Build final candidate for network (seconds timestamp)
+            candidate = deepcopy(candidate_ns)
+            candidate["timestamp"] = ts_seconds
+            # recompute hash using seconds timestamp (node expects seconds)
             try:
-                canonical_hash = crypto_hash(NETWORK_ID, int(candidate['timestamp']), candidate['last_hash'],
-                                             candidate.get('data', []), int(candidate['difficulty']), int(candidate['nonce']),
-                                             candidate['merkle'])
+                canonical_hash = crypto_hash(NETWORK_ID, candidate["timestamp"], candidate["last_hash"],
+                                             candidate.get("data", []), int(candidate["difficulty"]), int(candidate["nonce"]),
+                                             candidate.get("merkle", ""))
             except Exception as e:
                 print("[miner|submit-guard] error recomputing canonical hash before submit:", e)
                 canonical_hash = None
 
-            print("[miner|submit-guard] miner_hash (before overwrite):", candidate.get('hash'))
+            print("[miner|submit-guard] miner_hash (before overwrite):", candidate_ns.get('hash'))
             print("[miner|submit-guard] recomputed canonical_hash        :", canonical_hash)
 
             if canonical_hash is None or hex_to_binary(canonical_hash)[: candidate['difficulty']] != "0" * candidate['difficulty']:
                 # abort and save debug
-                print("[miner|submit-guard] aborting submit: canonical hash missing or fails PoW locally.")
+                print("[miner|submit-guard] aborting submit: canonical hash missing or fails PoW locally (after seconds conversion).")
                 if args.debug_dir:
                     try:
                         fname = safe_make_fname(args.debug_dir, "aborted_submit")
                         with open(fname, "w", encoding="utf-8") as f:
-                            json.dump({"attempted_candidate": candidate, "note": "aborted by submit-guard"}, f, indent=2, sort_keys=True)
+                            json.dump({"attempted_candidate": candidate, "note": "aborted by submit-guard (seconds mismatch)"}, f, indent=2, sort_keys=True)
                         print("[miner|submit-guard] saved", fname)
                     except Exception as e:
                         print("[miner|submit-guard] could not save aborted debug:", e)
-                # skip submit; go back to mining loop
                 continue
 
             # overwrite candidate hash with canonical_hash and submit
@@ -440,7 +485,7 @@ def main():
             if 'height' in candidate_to_send:
                 del candidate_to_send['height']
 
-            # Build merkle variants (diagnostic) - try some variants but authoritative canonical was used to mine
+            # Build merkle variants (diagnostic) - we still generate variants, but authoritative canonical was used to mine
             merkle_variants = []
             for include_id in (False, True):
                 for double_leaf in (False, True):
@@ -462,13 +507,12 @@ def main():
                     except Exception:
                         pass
 
-            # dedupe preserve order
             seen = set(); merkle_variants_unique = []
             for name, mv in merkle_variants:
                 if mv and mv not in seen:
                     seen.add(mv); merkle_variants_unique.append((name, mv))
 
-            # Try submit variants (but we already set canonical merkle/hash; these are diagnostics)
+            # Try submit variants (diagnostic); but we send canonical candidate first in canonical loop later
             submitted_ok = False
             tries = 0
             last_resp = (False, None, None)
@@ -481,20 +525,17 @@ def main():
                     continue
 
                 candidate_try = deepcopy(candidate_to_send)
-                candidate_try['merkle'] = mval
-
-                # recompute authoritative merkle/hash for this candidate_try before submit
+                # ensure merkle variant is canonical for the listed txs (we still compute canonical merkle for the txs)
                 candidate_try['merkle'] = merkle_root(candidate_try.get('data', []))
                 try:
                     candidate_try['hash'] = crypto_hash(NETWORK_ID, candidate_try['timestamp'], candidate_try['last_hash'],
                                                         candidate_try.get('data', []), candidate_try['difficulty'], candidate_try['nonce'],
                                                         candidate_try['merkle'])
                 except Exception:
-                    # if for any reason crypto_hash fails, skip submit for this variant
                     tries += 1
                     continue
 
-                # local PoW guard
+                # local PoW guard (binary)
                 if hex_to_binary(candidate_try['hash'])[: candidate_try['difficulty']] != "0" * candidate_try['difficulty']:
                     print("[miner] local-check: candidate fails PoW -> skipping submit for this variant.")
                     tries += 1
@@ -534,7 +575,11 @@ def main():
             errtxt = str(body).lower() if body else ""
             if any(k in errtxt for k in ["bad last_hash", "median past", "hash must be correct", "reward must pay"]):
                 try:
-                    chain2 = mc.get_json(sess, base, "/blockchain")
+                    chain2_resp = mc.get_json(sess, base, "/blockchain")
+                    if isinstance(chain2_resp, dict) and "chain" in chain2_resp:
+                        chain2 = chain2_resp["chain"]
+                    else:
+                        chain2 = chain2_resp
                     mempool2 = mc.get_json(sess, base, "/mempool")
                 except Exception as e:
                     print("[miner] retry fetch error:", e)
@@ -545,8 +590,13 @@ def main():
                 parent_ts2_ns = mc._to_int_ns(tip2.get("timestamp"))
                 parent_diff2 = int(tip2.get("difficulty", parent_diff) or parent_diff)
 
-                block_data2 = list(mempool2)
+                block_data2 = []
+                for tx in mempool2:
+                    ntx = deepcopy(tx)
+                    ntx = normalize_tx_for_network(ntx)
+                    block_data2.append(ntx)
                 reward_tx2 = mc.build_reward_tx(args.addr, mempool2, MINING_REWARD_INPUT, MINING_REWARD_ASSET, MINING_REWARD)
+                reward_tx2 = normalize_tx_for_network(reward_tx2)
                 block_data2.append(reward_tx2)
 
                 leaves2 = [hashlib.sha256(canonical_json(tx, ensure_ascii=False, separators=(',', ':')).encode('utf-8')).hexdigest() for tx in block_data2]
@@ -567,17 +617,19 @@ def main():
                     target2 = "0" * difficulty2
                     h2 = crypto_hash(NETWORK_ID, ts2_ns, parent_hash2, block_data2, difficulty2, nonce2, merkle2)
 
-                candidate.update({
-                    "timestamp": ts2_ns,
+                # convert ts2_ns -> seconds for network submission
+                ts2_seconds = int(ts2_ns // 1_000_000_000)
+                candidate_update = {
+                    "timestamp": ts2_seconds,
                     "last_hash": parent_hash2,
-                    "hash": h2,
+                    "hash": crypto_hash(NETWORK_ID, ts2_seconds, parent_hash2, block_data2, difficulty2, nonce2, merkle2),
                     "data": block_data2,
                     "difficulty": difficulty2,
                     "nonce": nonce2,
                     "merkle": merkle2
-                })
+                }
 
-                ok2, code2, body2 = submit_block(sess, base, candidate, header_version, header_double_sha, NETWORK_ID, debug_dir=args.debug_dir)
+                ok2, code2, body2 = submit_block(sess, base, candidate_update, header_version, header_double_sha, NETWORK_ID, debug_dir=args.debug_dir)
                 if ok2:
                     print(f"[miner] submit OK (retry): {body2}")
                     failures = 0

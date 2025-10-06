@@ -1,10 +1,11 @@
-# wallet/transaction.py
+# blockchain_backend/wallet/transaction.py
 import time
 import uuid
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple, Union
 
 from blockchain_backend.wallet.wallet import Wallet
 from blockchain_backend.utils.config import MINING_REWARD_INPUT
+from blockchain_backend.wallet.helpers import serialize_signature, parse_signature
 
 
 class Asset:
@@ -116,18 +117,21 @@ class Transaction:
 
         # --- Create input with snapshot for spent currencies only ---
         spent_snapshot = {c: int(sender_wallet.balances[c]) for c in spent_map}
+        raw_sig = sender_wallet.sign(self.output)  # returns (r,s) as ints
+        sig_hex = serialize_signature(raw_sig)
         self.input = {
-            "timestamp": time.time_ns(),
+            "timestamp": int(time.time()),  # use seconds for portability
             "balances": spent_snapshot,
             "address": sender_wallet.address,
             "public_key": sender_wallet.public_key,
             "fee": int(self.metadata.get("fee", 0)) if "fee" in (self.metadata or {}) else 0,
-            "signature": sender_wallet.sign(self.output),
+            "signature": sig_hex,
         }
 
     # ---------------------------
     # Asset operations
     # ---------------------------
+    @staticmethod
     def list_asset_for_sale(owner_wallet: Wallet, asset: Asset, price: int, currency="COIN", metadata=None):
         if asset.owner != owner_wallet.address:
             raise Exception("Only the asset owner may list it for sale")
@@ -136,18 +140,22 @@ class Transaction:
         meta["asset_listing"] = {"asset_id": asset.asset_id, "price": int(price), "currency": currency}
 
         output = {}
+        # ensure signature stored as hex strings and timestamp in seconds
+        raw_sig = owner_wallet.sign(output)
+        sig_hex = serialize_signature(raw_sig)
         return Transaction(
             output=output,
             input={
-                "timestamp": time.time_ns(),
+                "timestamp": int(time.time()),
                 "balances": {},
                 "address": owner_wallet.address,
                 "public_key": owner_wallet.public_key,
-                "signature": owner_wallet.sign(output),
+                "signature": sig_hex,
             },
             metadata=meta
         )
 
+    @staticmethod
     def cancel_listing(owner_wallet: Wallet, asset: Asset, metadata=None):
         if asset.owner != owner_wallet.address:
             raise Exception("Only the asset owner can cancel listing")
@@ -156,18 +164,21 @@ class Transaction:
         meta["asset_listing_cancel"] = {"asset_id": asset.asset_id}
 
         output = {}
+        raw_sig = owner_wallet.sign(output)
+        sig_hex = serialize_signature(raw_sig)
         return Transaction(
             output=output,
             input={
-                "timestamp": time.time_ns(),
+                "timestamp": int(time.time()),
                 "balances": {},
                 "address": owner_wallet.address,
                 "public_key": owner_wallet.public_key,
-                "signature": owner_wallet.sign(output),
+                "signature": sig_hex,
             },
             metadata=meta
         )
 
+    @staticmethod
     def purchase_asset(buyer_wallet: Wallet, asset: Asset, get_owner_wallet_fn, metadata=None):
         seller_address = asset.owner
         if seller_address == buyer_wallet.address:
@@ -201,19 +212,22 @@ class Transaction:
         }
         return tx
 
+    @staticmethod
     def transfer_asset_direct(sender_wallet: Wallet, recipient_address: str, asset: Asset, metadata=None):
         if asset.owner != sender_wallet.address:
             raise Exception("Only the current owner can transfer this asset")
 
         output = {}
+        raw_sig = sender_wallet.sign(output)
+        sig_hex = serialize_signature(raw_sig)
         tx = Transaction(
             output=output,
             input={
-                "timestamp": time.time_ns(),
+                "timestamp": int(time.time()),
                 "balances": {},
                 "address": sender_wallet.address,
                 "public_key": sender_wallet.public_key,
-                "signature": sender_wallet.sign(output)
+                "signature": sig_hex
             },
             metadata=dict(metadata or {})
         )
@@ -243,10 +257,23 @@ class Transaction:
     # Serialization + Validation
     # ---------------------------
     def to_json(self):
-        return {"id": self.id, "input": self.input, "output": self.output, "metadata": self.metadata}
+        # ensure input.signature already serialized to hex strings (if it's a tuple, convert now)
+        inp = dict(self.input or {})
+        sig = inp.get("signature")
+        if sig and isinstance(sig, (list, tuple)) and not isinstance(sig[0], str):
+            inp["signature"] = serialize_signature(sig)
+        # ensure timestamp in seconds
+        if "timestamp" in inp:
+            try:
+                inp["timestamp"] = int(inp["timestamp"])
+            except Exception:
+                inp["timestamp"] = int(time.time())
+        return {"id": self.id, "input": inp, "output": self.output, "metadata": self.metadata}
 
     @staticmethod
     def from_json(data):
+        # The constructor expects signature numerics only when verifying, so you can keep signature as hex
+        # If you need the numeric (for verification), call parse_signature where needed.
         return Transaction(**data)
 
     @staticmethod
@@ -283,10 +310,6 @@ class Transaction:
             if f not in tx_input:
                 raise Exception(f"Transaction input missing {f}")
 
-        # Signature authenticity
-        if not Wallet.verify(tx_input["public_key"], tx_output, tx_input["signature"]):
-            raise Exception("Invalid signature")
-
         # No negative outputs
         if Transaction._has_negative_amounts(tx_output):
             raise Exception("Negative amount in outputs")
@@ -317,6 +340,23 @@ class Transaction:
             coin_out = Transaction._sum_output_for_currency(transaction.output, "COIN")
             if coin_in < coin_out + fee:
                 raise Exception("Insufficient COIN to cover outputs + fee")
+
+        # Signature authenticity: parse serialized signature (hex/decimal strings) into numeric tuple first
+        sig_field = tx_input.get("signature")
+        try:
+            if isinstance(sig_field, (list, tuple)) and len(sig_field) >= 2:
+                if isinstance(sig_field[0], str):
+                    sig_nums: Union[Tuple[int, int], Any] = parse_signature(sig_field)
+                else:
+                    sig_nums = (int(sig_field[0]), int(sig_field[1]))
+            else:
+                raise Exception("Invalid signature format")
+        except Exception as e:
+            raise Exception(f"Invalid signature: {e}")
+
+        if not Wallet.verify(tx_input["public_key"], tx_output, sig_nums):
+            raise Exception("Invalid signature")
+
         # --- Asset validation (optional hook) ---
         if transaction.metadata:
             if "asset_purchase" in transaction.metadata:

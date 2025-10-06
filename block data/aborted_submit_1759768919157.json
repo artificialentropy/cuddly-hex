@@ -1,0 +1,53 @@
+{
+  "attempted_candidate": {
+    "data": [
+      {
+        "id": "b65564f2",
+        "input": {
+          "address": "73c1c00e",
+          "balances": {
+            "COIN": 1000
+          },
+          "fee": 0,
+          "public_key": "-----BEGIN PUBLIC KEY-----\nMFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAEEpAHeUnz4qg3h3DkVPgQcqOXYgE4z8Hx\n1HbqjHyiP6VN3jOrL+H8AyJsi5mwtPpt06NuboNUi0l/y54rsuV6KA==\n-----END PUBLIC KEY-----\n",
+          "signature": [
+            "3fbcbc977470dbbad6f656db0b1e9cc42620c8afec10da250589d4a6e91e7811",
+            "77c7033a418a5efdaf01f95784a5607d9f49bbdbafedd613e3797af3f5bfe7dd"
+          ],
+          "timestamp": 1759768890
+        },
+        "metadata": {},
+        "output": {
+          "5b2a94c2": {
+            "COIN": 11
+          },
+          "73c1c00e": {
+            "COIN": 989
+          }
+        }
+      },
+      {
+        "id": "cb-1759768919",
+        "input": {
+          "address": "*--official-mining-reward--*"
+        },
+        "metadata": {
+          "miner": "miner-demo-addr"
+        },
+        "output": {
+          "miner-demo-addr": {
+            "COIN": 50
+          }
+        }
+      }
+    ],
+    "difficulty": 3,
+    "hash": "06535d6468e712103de39387298531203fe4ccc05b007fa9fa6ff4eebb6fb7a3",
+    "height": null,
+    "last_hash": "genesis_hash",
+    "merkle": "6f8bdb1c2e23f112f7c8d238776ace5ae2b9771c13149afe636e8db01fd27ed2",
+    "nonce": 7,
+    "timestamp": 1759768919
+  },
+  "note": "aborted by submit-guard (seconds mismatch)"
+}
