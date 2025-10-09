@@ -16,3 +16,18 @@ def normalize_timestamp(ts):
     if ts > 10**12:            # microseconds -> seconds
         return ts // 1_000_000
     return ts
+
+
+# helper: remove common extraneous debug/meta keys from remote block dicts
+def _strip_block_extras(raw_block: dict) -> dict:
+    """
+    Return a shallow copy of raw_block with keys removed that may be present
+    in remote debug envelopes but not accepted by Block.__init__.
+    """
+    if not isinstance(raw_block, dict):
+        return raw_block
+    b = dict(raw_block)
+    for k in ("version",):  # add other debug keys here if needed in future
+        if k in b:
+            b.pop(k, None)
+    return b

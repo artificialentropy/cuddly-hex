@@ -1,0 +1,81 @@
+{
+  "block": {
+    "data": [
+      {
+        "id": "19130ec5",
+        "input": {
+          "address": "fc0e986c",
+          "balances": {
+            "COIN": 1000
+          },
+          "fee": 0,
+          "public_key": "-----BEGIN PUBLIC KEY-----\nMFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAE/xBx6n79lVBSMALwVyldrujnzvaPM8IH\n6zkV7S1WyaUDJZcFFQtfIPReblMzqN4AQTBqG21jBErlYwmSRWPegQ==\n-----END PUBLIC KEY-----\n",
+          "signature": [
+            "249f432c153038ccf337c3b841fd124f725de10afb2258850706c07a8b03481",
+            "95552889b575492afaa4de059b68d4a9d8844fcfd4ae7a5b5164642ffa0d654a"
+          ],
+          "timestamp": 1759937178
+        },
+        "metadata": {},
+        "output": {
+          "6205eab7": {
+            "COIN": 11
+          },
+          "fc0e986c": {
+            "COIN": 989
+          }
+        }
+      },
+      {
+        "id": "eb4babdd",
+        "input": {
+          "address": "fc0e986c",
+          "balances": {
+            "COIN": 1000
+          },
+          "fee": 0,
+          "public_key": "-----BEGIN PUBLIC KEY-----\nMFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAE/xBx6n79lVBSMALwVyldrujnzvaPM8IH\n6zkV7S1WyaUDJZcFFQtfIPReblMzqN4AQTBqG21jBErlYwmSRWPegQ==\n-----END PUBLIC KEY-----\n",
+          "signature": [
+            "bbc928cfae38eb594169af8655831b2da027afa21b5dbdcbc5d7097c686b2081",
+            "53d71573a1ab001cf9c66056e626e8d8bbea0267e163e2f1ee9f91a10e22f34"
+          ],
+          "timestamp": 1759937179
+        },
+        "metadata": {},
+        "output": {
+          "6205eab7": {
+            "COIN": 11
+          },
+          "fc0e986c": {
+            "COIN": 989
+          }
+        }
+      },
+      {
+        "id": "cb-1759937189",
+        "input": {
+          "address": "*--official-mining-reward--*"
+        },
+        "metadata": {
+          "miner": "miner-demo-addr"
+        },
+        "output": {
+          "miner-demo-addr": {
+            "COIN": 50
+          }
+        }
+      }
+    ],
+    "difficulty": 3,
+    "hash": "0a260186f24ffbedf826d1227c5c95b01e4a55f838a3972691796399f3f39887",
+    "last_hash": "genesis_hash",
+    "merkle": "61301930dd123285b2c55b52f7b97c5af8e603cdf3a6c814f5a7130e39369aec",
+    "nonce": 3,
+    "timestamp": 1759937189
+  },
+  "response": {
+    "height": 2,
+    "ok": true,
+    "tip": "0a260186f24ffbedf826d1227c5c95b01e4a55f838a3972691796399f3f39887"
+  }
+}

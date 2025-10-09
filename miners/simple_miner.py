@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Tuple, Optional, Callable, Union
 from copy import deepcopy
 
 # local helper / client module (expects functions like wait_ready, detect_merkle_builder_from_tip, etc.)
-import miner_client as mc
+from . import miner_client as mc
 
 # optional GPU rig (must follow same preimage semantics)
 try:

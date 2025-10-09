@@ -1,0 +1,131 @@
+{
+  "block": {
+    "data": [
+      {
+        "id": "6a6e53bd",
+        "input": {
+          "address": "00bbdd38",
+          "balances": {
+            "COIN": 1000
+          },
+          "fee": 0,
+          "public_key": "-----BEGIN PUBLIC KEY-----\nMFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAEB27RqguimJJH3kEvY8lM8J83sMrjAMI+\nFWOdkl8BbofZioabWFu63vNRpG++YvCfO5n/TrioAY7ueAqzeLcURw==\n-----END PUBLIC KEY-----\n",
+          "signature": [
+            "558e5ff6de5e4ef1a14ea116edf29275e6cbfba740203c55ee4b8792e41cfcf8",
+            "9ce933b6827d8cfd620f987a4971d91b44214ebe6e7b0c20c3ba531853574c91"
+          ],
+          "timestamp": 1759935843
+        },
+        "metadata": {},
+        "output": {
+          "00bbdd38": {
+            "COIN": 989
+          },
+          "7d0a4507": {
+            "COIN": 11
+          }
+        }
+      },
+      {
+        "id": "937ab63b",
+        "input": {
+          "address": "00bbdd38",
+          "balances": {
+            "COIN": 1000
+          },
+          "fee": 0,
+          "public_key": "-----BEGIN PUBLIC KEY-----\nMFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAEB27RqguimJJH3kEvY8lM8J83sMrjAMI+\nFWOdkl8BbofZioabWFu63vNRpG++YvCfO5n/TrioAY7ueAqzeLcURw==\n-----END PUBLIC KEY-----\n",
+          "signature": [
+            "e3b225efc03c8d5a8033b4cc2a9c96765c68ea4a1f8a98f7da1f6299ee1b7950",
+            "7d4fd1d94789087ca0e56f168210cc0d6b6142fe1f98ab1f16ef5f231e6976ba"
+          ],
+          "timestamp": 1759935843
+        },
+        "metadata": {},
+        "output": {
+          "00bbdd38": {
+            "COIN": 989
+          },
+          "7d0a4507": {
+            "COIN": 11
+          }
+        }
+      },
+      {
+        "id": "9ada2ee3",
+        "input": {
+          "address": "00bbdd38",
+          "balances": {
+            "COIN": 1000
+          },
+          "fee": 0,
+          "public_key": "-----BEGIN PUBLIC KEY-----\nMFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAEB27RqguimJJH3kEvY8lM8J83sMrjAMI+\nFWOdkl8BbofZioabWFu63vNRpG++YvCfO5n/TrioAY7ueAqzeLcURw==\n-----END PUBLIC KEY-----\n",
+          "signature": [
+            "e83c3874a117bdfad82744c9949a2dafca7dff0ca8ac01a3e537820becc0d815",
+            "77fd3f190c332fa83e310d6d384a5462107f53904c33387e6eeffa28c96b6dfc"
+          ],
+          "timestamp": 1759935843
+        },
+        "metadata": {},
+        "output": {
+          "00bbdd38": {
+            "COIN": 989
+          },
+          "7d0a4507": {
+            "COIN": 11
+          }
+        }
+      },
+      {
+        "id": "08c64c18",
+        "input": {
+          "address": "00bbdd38",
+          "balances": {
+            "COIN": 1000
+          },
+          "fee": 0,
+          "public_key": "-----BEGIN PUBLIC KEY-----\nMFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAEB27RqguimJJH3kEvY8lM8J83sMrjAMI+\nFWOdkl8BbofZioabWFu63vNRpG++YvCfO5n/TrioAY7ueAqzeLcURw==\n-----END PUBLIC KEY-----\n",
+          "signature": [
+            "c14fb4b76eaaf90f3e5460e4f9b197b5a3d434c3dcf0d570d9bc26cf454d38eb",
+            "2cd33a6be5e68b02b5be2a7e32974ac9a7269d631c52c73d3df0dce0e5320b7d"
+          ],
+          "timestamp": 1759935843
+        },
+        "metadata": {},
+        "output": {
+          "00bbdd38": {
+            "COIN": 989
+          },
+          "7d0a4507": {
+            "COIN": 11
+          }
+        }
+      },
+      {
+        "id": "cb-1759935860",
+        "input": {
+          "address": "*--official-mining-reward--*"
+        },
+        "metadata": {
+          "miner": "miner-demo-addr"
+        },
+        "output": {
+          "miner-demo-addr": {
+            "COIN": 50
+          }
+        }
+      }
+    ],
+    "difficulty": 3,
+    "hash": "10500ffa6d5e4713b2f1b2eeb7ca84f6d030a7a3c22d743efc2b7640eed6004b",
+    "last_hash": "genesis_hash",
+    "merkle": "5ae0d49004ffbf92444c640ec3c9ec33bde913571e5564cbb4b3e7bd1a011403",
+    "nonce": 1,
+    "timestamp": 1759935860
+  },
+  "response": {
+    "height": 2,
+    "ok": true,
+    "tip": "10500ffa6d5e4713b2f1b2eeb7ca84f6d030a7a3c22d743efc2b7640eed6004b"
+  }
+}

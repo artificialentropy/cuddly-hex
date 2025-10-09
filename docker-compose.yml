@@ -1,3 +1,212 @@
+# version: "3.9"
+
+# services:
+#   db:
+#     image: postgres:15
+#     container_name: drf_db
+#     restart: unless-stopped
+#     environment:
+#       POSTGRES_DB: drfindex
+#       POSTGRES_USER: drfuser
+#       POSTGRES_PASSWORD: drfpass
+#     volumes:
+#       - db_data:/var/lib/postgresql/data
+#     ports:
+#       - "5432:5432"
+#     healthcheck:
+#       test:
+#         [
+#           "CMD-SHELL",
+#           "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} -h 127.0.0.1",
+#         ]
+#       interval: 5s
+#       timeout: 5s
+#       retries: 12
+#       start_period: 10s
+
+#   api:
+#     build:
+#       context: ./api_backend
+#       dockerfile: Dockerfile
+#     container_name: drf_api
+#     restart: unless-stopped
+#     depends_on:
+#       db:
+#         condition: service_healthy
+#     environment:
+#       PYTHONPATH: /app
+#       DATABASE_URL: postgres://drfuser:drfpass@db:5432/drfindex
+#       DJANGO_SETTINGS_MODULE: app_blockchain.settings
+#       DJANGO_DEBUG: "0"
+#     command: >
+#       bash -lc "
+#       python manage.py migrate --noinput &&
+#       gunicorn app_blockchain.wsgi:application
+#         --bind 0.0.0.0:8000
+#         --workers 2
+#         --threads 4
+#         --timeout 60
+#         --access-logfile -
+#         --error-logfile -
+#       "
+#     ports:
+#       - "8000:8000"
+#     volumes:
+#       - ./api_backend:/app
+#     healthcheck:
+#       test: >
+#         bash -lc "curl -fsS http://127.0.0.1:8000/health | grep -E '\"ok\": *true|\"status\": *\"ok\"'"
+#       interval: 5s
+#       timeout: 3s
+#       retries: 50
+#       start_period: 20s
+
+#   # --- blockchain node images (shared build) ---
+#   node0:
+#     build:
+#       context: .
+#       dockerfile: Dockerfile_blch
+#     container_name: node0
+#     restart: unless-stopped
+#     env_file:
+#       - .env
+#     environment:
+#       ROLE: ROOT
+#       PYTHONPATH: /app
+#       SELF_BASE: http://node0:5000
+#       PEER: False
+#       ROOT_HOST: node0
+#       ROOT_PORT: 5000
+#       FLASK_DEBUG: "1"
+#       WORKERS: "1"
+#       THREADS: "4"
+#       TIMEOUT: "120"
+#       PUBNUB_UUID: node0
+#       MINER_TOKEN: secret123
+#       GUNICORN_CMD_ARGS: "--log-level debug --capture-output --access-logfile - --error-logfile -"
+#     ports:
+#       - "5000:5000"
+#     healthcheck:
+#       test: >
+#         bash -lc "curl -sf http://127.0.0.1:5000/health | grep -E '\"ready\": *true|\"height\": *[1-9]'"
+#       interval: 5s
+#       timeout: 3s
+#       retries: 50
+#       start_period: 15s
+#     volumes:
+#       - ./data/node0/leveldb:/data/leveldb
+
+#   node1:
+#     build:
+#       context: .
+#       dockerfile: Dockerfile_blch
+#     container_name: node1
+#     restart: unless-stopped
+#     env_file:
+#       - .env
+#     environment:
+#       ROLE: VALIDATOR
+#       PYTHONPATH: /app
+#       SELF_BASE: http://node1:5000
+#       PEER: True
+#       ROOT_HOST: node0
+#       ROOT_PORT: 5000
+#       FLASK_DEBUG: "1"
+#       WORKERS: "1"
+#       THREADS: "4"
+#       TIMEOUT: "120"
+#       PUBNUB_UUID: node1
+#       GUNICORN_CMD_ARGS: "--log-level debug --capture-output --access-logfile - --error-logfile -"
+#     ports:
+#       - "5001:5000"
+#     depends_on:
+#       node0:
+#         condition: service_healthy
+#     healthcheck:
+#       test: >
+#         bash -lc "curl -sf http://127.0.0.1:5000/health | grep -E '\"ready\": *true|\"ok\": *true'"
+#       interval: 5s
+#       timeout: 3s
+#       retries: 50
+#       start_period: 10s
+#     volumes:
+#       - ./data/node1/leveldb:/data/leveldb
+
+#   node2:
+#     build:
+#       context: .
+#       dockerfile: Dockerfile_blch
+#     container_name: node2
+#     restart: unless-stopped
+#     env_file:
+#       - .env
+#     environment:
+#       ROLE: VALIDATOR
+#       PYTHONPATH: /app
+#       SELF_BASE: http://node2:5000
+#       PEER: True
+#       ROOT_HOST: node0
+#       ROOT_PORT: 5000
+#       FLASK_DEBUG: "1"
+#       WORKERS: "1"
+#       THREADS: "4"
+#       TIMEOUT: "120"
+#       PUBNUB_UUID: node2
+#       GUNICORN_CMD_ARGS: "--log-level debug --capture-output --access-logfile - --error-logfile -"
+#     ports:
+#       - "5002:5000"
+#     depends_on:
+#       node0:
+#         condition: service_healthy
+#     healthcheck:
+#       test: >
+#         bash -lc "curl -sf http://127.0.0.1:5000/health | grep -E '\"ready\": *true|\"ok\": *true'"
+#       interval: 5s
+#       timeout: 3s
+#       retries: 50
+#       start_period: 10s
+#     volumes:
+#       - ./data/node2/leveldb:/data/leveldb
+
+#   node3:
+#     build:
+#       context: .
+#       dockerfile: Dockerfile_blch
+#     container_name: node3
+#     restart: unless-stopped
+#     env_file:
+#       - .env
+#     environment:
+#       ROLE: VALIDATOR
+#       PYTHONPATH: /app
+#       SELF_BASE: http://node3:5000
+#       PEER: True
+#       ROOT_HOST: node0
+#       ROOT_PORT: 5000
+#       FLASK_DEBUG: "0"
+#       WORKERS: "1"
+#       THREADS: "4"
+#       TIMEOUT: "120"
+#       PUBNUB_UUID: node3
+#       GUNICORN_CMD_ARGS: "--log-level debug --capture-output --access-logfile - --error-logfile -"
+#     ports:
+#       - "5003:5000"
+#     depends_on:
+#       node0:
+#         condition: service_healthy
+#     healthcheck:
+#       test: >
+#         bash -lc "curl -sf http://127.0.0.1:5000/health | grep -E '\"ready\": *true|\"ok\": *true'"
+#       interval: 5s
+#       timeout: 3s
+#       retries: 50
+#       start_period: 10s
+#     volumes:
+#       - ./data/node3/leveldb:/data/leveldb
+
+# volumes:
+#   db_data:
+
 version: "3.9"
 
 services:
@@ -83,6 +292,9 @@ services:
       TIMEOUT: "120"
       PUBNUB_UUID: node0
       MINER_TOKEN: secret123
+      CHAIN_DB_PATH: /data/leveldb
+      CHAIN_STORE_PATH: /data/chain_store.json
+
       GUNICORN_CMD_ARGS: "--log-level debug --capture-output --access-logfile - --error-logfile -"
     ports:
       - "5000:5000"
@@ -93,6 +305,8 @@ services:
       timeout: 3s
       retries: 50
       start_period: 15s
+    volumes:
+      - ./data/node0/leveldb:/data/leveldb
 
   node1:
     build:
@@ -114,6 +328,8 @@ services:
       THREADS: "4"
       TIMEOUT: "120"
       PUBNUB_UUID: node1
+      CHAIN_DB_PATH: /data/leveldb
+      CHAIN_STORE_PATH: /data/chain_store.json
       GUNICORN_CMD_ARGS: "--log-level debug --capture-output --access-logfile - --error-logfile -"
     ports:
       - "5001:5000"
@@ -127,6 +343,8 @@ services:
       timeout: 3s
       retries: 50
       start_period: 10s
+    volumes:
+      - ./data/node1/leveldb:/data/leveldb
 
   node2:
     build:
@@ -148,6 +366,8 @@ services:
       THREADS: "4"
       TIMEOUT: "120"
       PUBNUB_UUID: node2
+      CHAIN_DB_PATH: /data/leveldb
+      CHAIN_STORE_PATH: /data/chain_store.json
       GUNICORN_CMD_ARGS: "--log-level debug --capture-output --access-logfile - --error-logfile -"
     ports:
       - "5002:5000"
@@ -161,6 +381,8 @@ services:
       timeout: 3s
       retries: 50
       start_period: 10s
+    volumes:
+      - ./data/node2/leveldb:/data/leveldb
 
   node3:
     build:
@@ -182,6 +404,8 @@ services:
       THREADS: "4"
       TIMEOUT: "120"
       PUBNUB_UUID: node3
+      CHAIN_DB_PATH: /data/leveldb
+      CHAIN_STORE_PATH: /data/chain_store.json
       GUNICORN_CMD_ARGS: "--log-level debug --capture-output --access-logfile - --error-logfile -"
     ports:
       - "5003:5000"
@@ -195,6 +419,8 @@ services:
       timeout: 3s
       retries: 50
       start_period: 10s
+    volumes:
+      - ./data/node3/leveldb:/data/leveldb
 
 volumes:
   db_data:
