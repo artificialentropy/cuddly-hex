@@ -170,12 +170,15 @@ def argp():
     ap.add_argument("--node", default=os.getenv("MINER_NODE_URL", "http://127.0.0.1:5000"))
     ap.add_argument("--addr", default=os.getenv("MINER_ADDRESS", "miner-demo-addr"))
     ap.add_argument("--token", default=os.getenv("MINER_TOKEN", ""))
+    ap.add_argument("--token-header", default=os.getenv("MINER_TOKEN_HEADER", "X-Miner-Token"),
+                    help="HTTP header name to send the miner token (e.g. 'X-Miner-Token' or 'Authorization: Bearer')")
     ap.add_argument("--allow-empty", action="store_true", default=os.getenv("MINER_ALLOW_EMPTY", "0") == "1")
     ap.add_argument("--interval", type=float, default=float(os.getenv("MINER_INTERVAL", "3")))
     ap.add_argument("--mpt-window", type=int, default=int(os.getenv("MEDIAN_PAST_WINDOW", "11")))
     ap.add_argument("--debug-dir", default=os.getenv("MINER_DEBUG_DIR", ""))
     ap.add_argument("--use-rig", action="store_true", default=os.getenv("MINER_USE_RIG", "0") == "1")
     return ap.parse_args()
+
 
 def normalize_tx_for_network(tx: Dict[str, Any]) -> Dict[str, Any]:
     try:
@@ -211,6 +214,18 @@ def main():
     sess = requests.Session()
     if args.token:
         sess.headers.update({"X-Miner-Token": args.token})
+        
+    if args.token:
+        header_name = args.token_header
+        # support "Authorization: Bearer <token>"
+        if header_name.lower().startswith("authorization"):
+            # if user passed "Authorization: Bearer", construct the value
+            sess.headers.update({"Authorization": f"Bearer {args.token}"})
+        else:
+            sess.headers.update({header_name: args.token})
+
+        # print the headers we sent for debugging
+        print("[miner] sending auth header:", {k: v for k, v in sess.headers.items() if 'token' in k.lower() or 'authorization' in k.lower()})
 
     print(f"[miner] starting. node={base} addr={args.addr} allow_empty={int(args.allow_empty)} debug_dir={args.debug_dir!r}")
     try:
