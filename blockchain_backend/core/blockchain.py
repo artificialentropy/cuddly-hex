@@ -100,31 +100,94 @@ class Blockchain:
         # persist to LevelDB if store present
         # core/blockchain.py -> inside add_block (after self.store.set_height... block persisted)
         # Persist assets meta as well (best-effort)
+        # if self.store is not None:
+        #     try:
+        #         from blockchain_backend.app.app_state import rebuild_assets_from_chain, ASSETS
+        #         # update in-memory assets (if needed) then persist
+        #         rebuild_assets_from_chain(self.chain)
+        #         meta = {}
+        #         for aid, asset_obj in ASSETS.items():
+        #             meta[aid] = {
+        #                 "owner": getattr(asset_obj, "owner", None),
+        #                 "price": getattr(asset_obj, "price", 0),
+        #                 "currency": getattr(asset_obj, "currency", "COIN"),
+        #                 "transferable": getattr(asset_obj, "transferable", True),
+        #             }
+        #         try:
+        #             self.store.put_meta("assets", meta)
+        #         except Exception:
+        #             # fallback direct DB put
+        #             try:
+        #                 dbh = getattr(self.store, "db", None)
+        #                 if dbh is not None:
+        #                     dbh.put(getattr(self.store, "META_KEY_PREFIX", b"m:") + b"assets", json.dumps(meta, separators=(",", ":")).encode("utf-8"))
+        #             except Exception:
+        #                 pass
+        #     except Exception:
+        #         pass
+
+                # ---- persist the new block to LevelDB if store present ----
         if self.store is not None:
             try:
-                from blockchain_backend.app.app_state import rebuild_assets_from_chain, ASSETS
-                # update in-memory assets (if needed) then persist
-                rebuild_assets_from_chain(self.chain)
-                meta = {}
-                for aid, asset_obj in ASSETS.items():
-                    meta[aid] = {
-                        "owner": getattr(asset_obj, "owner", None),
-                        "price": getattr(asset_obj, "price", 0),
-                        "currency": getattr(asset_obj, "currency", "COIN"),
-                        "transferable": getattr(asset_obj, "transferable", True),
-                    }
+                # Prepare block JSON
+                bj = b.to_json() if hasattr(b, "to_json") else dict(b)
+                # Ensure height present
+                bj["height"] = int(getattr(b, "height", len(self.chain) - 1))
+
+                # Preferred: use store API if available
                 try:
-                    self.store.put_meta("assets", meta)
-                except Exception:
-                    # fallback direct DB put
-                    try:
+                    if hasattr(self.store, "put_block"):
+                        # high-level store API
+                        self.store.put_block(bj)
+                    else:
+                        # fallback to raw db handle if available
                         dbh = getattr(self.store, "db", None)
                         if dbh is not None:
-                            dbh.put(getattr(self.store, "META_KEY_PREFIX", b"m:") + b"assets", json.dumps(meta, separators=(",", ":")).encode("utf-8"))
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                            with dbh.write_batch() as wb:
+                                blk_key = getattr(self.store, "BLOCK_KEY_PREFIX", b"b:") + bj["hash"].encode("utf-8")
+                                wb.put(blk_key, json.dumps(bj, separators=(",", ":")).encode("utf-8"))
+                                # height index => hash
+                                height_idx_pref = getattr(self.store, "HEIGHT_INDEX_PREFIX", b"h:")
+                                wb.put(height_idx_pref + int(bj["height"]).to_bytes(8, "big", signed=False), bj["hash"].encode("utf-8"))
+                                # update top height pointer
+                                hk = getattr(self.store, "HEIGHT_KEY", b"height")
+                                wb.put(hk, int(bj["height"]).to_bytes(8, "big", signed=False))
+                        else:
+                            # last fallback: try generic put method if present
+                            if hasattr(self.store, "put"):
+                                key = getattr(self.store, "BLOCK_KEY_PREFIX", b"b:") + bj["hash"].encode("utf-8")
+                                val = json.dumps(bj, separators=(",", ":")).encode("utf-8")
+                                try:
+                                    self.store.put(key, val)
+                                except Exception:
+                                    pass
+
+                    # Update height via API if present
+                    if hasattr(self.store, "set_height"):
+                        try:
+                            self.store.set_height(int(bj["height"]))
+                        except Exception:
+                            pass
+
+                except Exception as inner_e:
+                    # fallback to raw db handle if store API failed
+                    dbh = getattr(self.store, "db", None)
+                    if dbh is not None:
+                        try:
+                            with dbh.write_batch() as wb:
+                                blk_key = getattr(self.store, "BLOCK_KEY_PREFIX", b"b:") + bj["hash"].encode("utf-8")
+                                wb.put(blk_key, json.dumps(bj, separators=(",", ":")).encode("utf-8"))
+                                height_idx_pref = getattr(self.store, "HEIGHT_INDEX_PREFIX", b"h:")
+                                wb.put(height_idx_pref + int(bj["height"]).to_bytes(8, "big", signed=False), bj["hash"].encode("utf-8"))
+                                hk = getattr(self.store, "HEIGHT_KEY", b"height")
+                                wb.put(hk, int(bj["height"]).to_bytes(8, "big", signed=False))
+                        except Exception as e2:
+                            print("[Blockchain] failed to persist new block via db handle:", e2)
+                    else:
+                        print("[Blockchain] store.put_block failed and no db handle available:", inner_e)
+            except Exception as e:
+                print("[Blockchain] error while persisting new block (non-fatal):", e)
+
 
 
         return b
