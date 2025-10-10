@@ -11,6 +11,8 @@ import time
 import plyvel
 from typing import Optional, Dict, Any, Iterator, List
 
+
+META_PREFIX = b"meta:"
 # --- Configuration ---
 OPEN_RETRY_COUNT = int(os.getenv("CHAIN_DB_OPEN_RETRIES", "6"))
 OPEN_RETRY_DELAY = float(os.getenv("CHAIN_DB_OPEN_RETRY_DELAY", "1.0"))  # seconds
@@ -107,7 +109,35 @@ class LevelDBStore:
         if create_if_missing:
             _ensure_dir_for_path(path)
         self.db = plyvel.DB(path, create_if_missing=create_if_missing)
+    def _meta_key(self, key: str) -> bytes:
+        if isinstance(key, str):
+            key = key.encode("utf-8")
+        return META_PREFIX + key
 
+    def put_meta(self, key: str, value: Any) -> None:
+        """
+        Store metadata under 'meta:{key}'. Serializes value as JSON.
+        """
+        val_bytes = json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        # if using plyvel:
+        self.db.put(self._meta_key(key), val_bytes)
+
+    def get_meta(self, key: str, default: Optional[Any] = None) -> Any:
+        """
+        Get metadata value. Returns default if not found.
+        """
+        raw = self.db.get(self._meta_key(key))
+        if raw is None:
+            return default
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except Exception:
+            # if stored as raw bytes (older format), return raw
+            return raw
+
+    def delete_meta(self, key: str) -> None:
+        """Optional helper"""
+        self.db.delete(self._meta_key(key))
     # ---------- block ops ----------
     def _block_key(self, block_hash_hex: str) -> bytes:
         return BLOCK_KEY_PREFIX + block_hash_hex.encode()
