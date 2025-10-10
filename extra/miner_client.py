@@ -1,25 +1,22 @@
+# miner_client.py
 """
-miner_client.py
 Helper utilities for the miner:
 - canonical JSON header hashing (single/double)
 - merkle detection & builders
 - time/difficulty helpers
-- HTTP helpers (wait_ready, get_json, submit_block wrapper is in simple_miner)
+- HTTP helpers (wait_ready, get_json, submit_block)
 - reward tx builder
 """
-from __future__ import annotations
-import json
-import time
-import hashlib
-import requests
-import os
-from typing import Any, Dict, List, Tuple, Callable, Optional, Union
 
+from __future__ import annotations
+import json, time, hashlib, requests, os
+from typing import Any, Dict, List, Tuple, Callable, Optional, Union
+import os
+import time
 MIN_DIFFICULTY = int(os.getenv("MIN_DIFFICULTY", "1"))
 MAX_DIFFICULTY = int(os.getenv("MAX_DIFFICULTY", "64"))
 DIFFICULTY_STEP_UP = int(os.getenv("DIFFICULTY_STEP_UP", "1"))
 DIFFICULTY_STEP_DOWN = int(os.getenv("DIFFICULTY_STEP_DOWN", "1"))
-
 # ---------- canonical JSON bytes + sha helpers ----------
 def _canon_bytes(o: Any) -> bytes:
     return json.dumps(o, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -154,6 +151,7 @@ def adjust_difficulty(parent_diff: int, parent_ts_ns: int, now_ts_ns: int, mine_
         return max(pd - DIFFICULTY_STEP_DOWN, MIN_DIFFICULTY)
 
 # ---------- reward tx builder ----------
+
 def build_reward_tx(
     miner_address: str,
     mempool: Optional[List[Dict[str, Any]]] = None,
@@ -164,7 +162,19 @@ def build_reward_tx(
 ) -> Dict[str, Any]:
     """
     Build a canonical reward (coinbase) transaction for miners.
+
+    - miner_address: destination address (string).
+    - mempool: list of mempool tx dicts (optional) — used to sum fees.
+    - mining_reward_input: the sentinel value the node uses to detect reward tx.
+      This should be passed-through *exactly* as returned by node /health (string or dict).
+      IMPORTANT: We DO NOT add timestamp or other keys to this sentinel object.
+    - reward_asset: currency string (e.g. "COIN").
+    - mining_reward_amount: base block reward (int).
+    - metadata: optional metadata to add to the tx (e.g. {"miner": miner_address}).
+
+    Returns a JSON-serializable tx dict accepted by the node.
     """
+    # Sum fees from mempool (defensive)
     total_fees = 0
     if mempool:
         for tx in mempool:
@@ -173,6 +183,7 @@ def build_reward_tx(
                 fee = int(inp.get("fee", 0))
                 total_fees += fee
             except Exception:
+                # ignore malformed fee fields
                 continue
 
     amount = int(mining_reward_amount) + int(total_fees)
