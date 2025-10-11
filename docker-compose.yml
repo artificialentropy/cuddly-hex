@@ -57,15 +57,15 @@ services:
     healthcheck:
       test: >
         bash -lc "python - <<'PY'
-import sys, urllib.request, json
-try:
-    r = urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)
-    j = json.load(r)
-    ok = j.get('ok') is True or j.get('status') == 'ok'
-    sys.exit(0 if ok else 1)
-except Exception:
-    sys.exit(1)
-PY"
+        import sys, urllib.request, json
+        try:
+            r = urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)
+            j = json.load(r)
+            ok = j.get('ok') is True or j.get('status') == 'ok'
+            sys.exit(0 if ok else 1)
+        except Exception:
+            sys.exit(1)
+        PY"
       interval: 30s
       timeout: 5s
       retries: 6
@@ -105,17 +105,17 @@ PY"
       # use Python-based check (no curl), and reduce frequency to avoid constant pings
       test: >
         bash -lc "python - <<'PY'
-import sys, json, urllib.request
-try:
-    r = urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)
-    j = json.load(r)
-    # consider node healthy if ready true or height >= 1
-    if j.get('ready') is True or int(j.get('height') or 0) >= 1:
-        sys.exit(0)
-    sys.exit(1)
-except Exception:
-    sys.exit(1)
-PY"
+        import sys, json, urllib.request
+        try:
+            r = urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)
+            j = json.load(r)
+            # consider node healthy if ready true or height >= 1
+            if j.get('ready') is True or int(j.get('height') or 0) >= 1:
+                sys.exit(0)
+            sys.exit(1)
+        except Exception:
+            sys.exit(1)
+        PY"
       interval: 30s
       timeout: 5s
       retries: 6
@@ -155,16 +155,16 @@ PY"
     healthcheck:
       test: >
         bash -lc "python - <<'PY'
-import sys, json, urllib.request
-try:
-    r = urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)
-    j = json.load(r)
-    if j.get('ready') is True or j.get('ok') is True:
-        sys.exit(0)
-    sys.exit(1)
-except Exception:
-    sys.exit(1)
-PY"
+        import sys, json, urllib.request
+        try:
+            r = urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)
+            j = json.load(r)
+            if j.get('ready') is True or j.get('ok') is True:
+                sys.exit(0)
+            sys.exit(1)
+        except Exception:
+            sys.exit(1)
+        PY"
       interval: 30s
       timeout: 5s
       retries: 6
@@ -204,16 +204,16 @@ PY"
     healthcheck:
       test: >
         bash -lc "python - <<'PY'
-import sys, json, urllib.request
-try:
-    r = urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)
-    j = json.load(r)
-    if j.get('ready') is True or j.get('ok') is True:
-        sys.exit(0)
-    sys.exit(1)
-except Exception:
-    sys.exit(1)
-PY"
+        import sys, json, urllib.request
+        try:
+            r = urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)
+            j = json.load(r)
+            if j.get('ready') is True or j.get('ok') is True:
+                sys.exit(0)
+            sys.exit(1)
+        except Exception:
+            sys.exit(1)
+        PY"
       interval: 30s
       timeout: 5s
       retries: 6
@@ -253,16 +253,16 @@ PY"
     healthcheck:
       test: >
         bash -lc "python - <<'PY'
-import sys, json, urllib.request
-try:
-    r = urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)
-    j = json.load(r)
-    if j.get('ready') is True or j.get('ok') is True:
-        sys.exit(0)
-    sys.exit(1)
-except Exception:
-    sys.exit(1)
-PY"
+        import sys, json, urllib.request
+        try:
+            r = urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)
+            j = json.load(r)
+            if j.get('ready') is True or j.get('ok') is True:
+                sys.exit(0)
+            sys.exit(1)
+        except Exception:
+            sys.exit(1)
+        PY"
       interval: 30s
       timeout: 5s
       retries: 6
