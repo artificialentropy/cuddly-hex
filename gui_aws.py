@@ -1,3 +1,4 @@
+
 # wallet_gui.py
 import json
 import threading
@@ -5,12 +6,13 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import requests
 
-VERIFY_SSL = True            # set False only for local testing with self-signed certs
-DEFAULT_NODE_URL = "https://<EC2_IP_OR_DOMAIN>:8000"  # <- replace with your EC2 public IP or domain
+# ----------------- CONFIG -----------------
+# Set to False only for local testing with a self-signed cert.
+VERIFY_SSL = True
 
-# In WalletGUI.__init__, change node_url_var default:
-self.node_url_var = tk.StringVar(value=DEFAULT_NODE_URL)
-# --------------- Helpers ---------------
+# Replace this with your server. Use http://... if not using TLS.
+DEFAULT_NODE_URL = "http://3.108.252.40:5000"
+# ------------------------------------------
 
 def safe_int(val, default=0):
     try:
@@ -25,39 +27,6 @@ def is_json_response(r: requests.Response) -> bool:
 
 
 class ApiClient:
-    # def __init__(self, base_url_getter, log_cb):
-    #     self.base_url_getter = base_url_getter
-    #     self.log = log_cb
-    #     self.token = None
-    #     self.user_id = None
-    #     self.address = None
-
-    # def _req(self, method, path, data=None, timeout=8, auth=False):
-    #     base = self.base_url_getter().rstrip("/")
-    #     url = base + path
-    #     headers = {}
-    #     if auth and self.token:
-    #         headers["X-Auth-Token"] = self.token
-    #     try:
-    #         if method == "GET":
-    #             r = requests.get(url, headers=headers, timeout=timeout)
-    #         else:
-    #             r = requests.post(url, json=data or {}, headers=headers, timeout=timeout)
-    #         j = r.json() if is_json_response(r) else {"_raw": r.text, "_status": r.status_code}
-    #         if not r.ok:
-    #             # surface remote error body if present
-    #             msg = j.get("error") if isinstance(j, dict) else str(j)
-    #             raise RuntimeError(msg or f"HTTP {r.status_code}")
-    #         return j
-    #     except Exception as e:
-    #         self.log(f"[HTTP ERROR] {method} {url} -> {e}")
-    #         raise
-
-    # near the top of file, add this constant (edit value)
-
-
-# Modify ApiClient __init__ to accept verify flag and use it for requests
-
     def __init__(self, base_url_getter, log_cb, verify_ssl=True):
         self.base_url_getter = base_url_getter
         self.log = log_cb
@@ -85,7 +54,6 @@ class ApiClient:
         except Exception as e:
             self.log(f"[HTTP ERROR] {method} {url} -> {e}")
             raise
-
 
     # -------- Auth --------
     def login(self, user_id):
@@ -137,7 +105,6 @@ class ApiClient:
 
     # -------- Transactions (auto /u or /wallet) --------
     def _tx_endpoint(self) -> tuple[str, bool]:
-        """Return (path, auth_required). If logged in, prefer user-scoped endpoint."""
         if self.token:
             return ("/u/tx", True)
         return ("/wallet/transact", False)
@@ -202,67 +169,19 @@ class WalletGUI(tk.Tk):
         self.minsize(920, 640)
 
         # state
-        self.node_url_var = tk.StringVar(value="http://localhost:5000")
+        self.node_url_var = tk.StringVar(value=DEFAULT_NODE_URL)
         self.active_addr_var = tk.StringVar(value="")
         self.currency_var = tk.StringVar(value="COIN")
 
-        # api client
-        self.api = ApiClient(self.get_base_url, self.log)
-
+        # --- build layout FIRST (so self.log_text exists)
         self._build_layout()
+        self.api = ApiClient(self.get_base_url, self.log, verify_ssl=VERIFY_SSL)
+
+        # --- then create API client (can now safely use self.log)
 
     def get_base_url(self):
         return self.node_url_var.get().strip()
-
-    # --- UI building ---
-    def on_login(self):
-        user_id = (self.user_id_var.get() or "").strip()
-        if not user_id:
-            messagebox.showwarning("Missing User ID", "Enter a user id to login.")
-            return
-        j = self.api.login(user_id)
-        addr = j.get("address")
-        self.active_addr_var.set(addr or "")
-        tok = j.get("token", "")
-        tok_disp = (tok[:8] + "…") if tok else "n/a"
-        self.log(f"[Login] user_id={j.get('user_id')} address={addr} token={tok_disp}")
-        # show /u/me
-        me = self.api.me()
-        self.show_json(me)
-
-    def _build_layout(self):
-        top = ttk.Frame(self, padding=10)
-        top.pack(fill="x")
-        ttk.Label(top, text="User ID:").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        self.user_id_var = tk.StringVar()
-        ttk.Entry(top, textvariable=self.user_id_var, width=20).grid(row=1, column=1, sticky="we", padx=(5, 15), pady=(6, 0))
-        ttk.Button(top, text="Login", command=self._async(self.on_login)).grid(row=1, column=2, padx=5, pady=(6, 0))
-
-        ttk.Label(top, text="Node URL:").grid(row=0, column=0, sticky="w")
-        ttk.Entry(top, textvariable=self.node_url_var, width=35).grid(row=0, column=1, sticky="we", padx=(5, 15))
-
-        ttk.Label(top, text="Active Wallet Address:").grid(row=0, column=2, sticky="w")
-        ttk.Entry(top, textvariable=self.active_addr_var, width=20).grid(row=0, column=3, sticky="we", padx=(5, 15))
-
-        ttk.Button(top, text="Health", command=self._async(self.on_health)).grid(row=0, column=4, padx=5)
-        ttk.Button(top, text="Chain Height", command=self._async(self.on_chain_len)).grid(row=0, column=5, padx=5)
-        ttk.Button(top, text="Mine Block", command=self._async(self.on_mine)).grid(row=0, column=6, padx=5)
-
-        top.grid_columnconfigure(1, weight=1)
-        top.grid_columnconfigure(3, weight=1)
-
-        # Notebook (tabs)
-        nb = ttk.Notebook(self)
-        nb.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-
-        nb.add(self._tab_wallet(), text="Wallet")
-        nb.add(self._tab_assets(), text="Assets")
-        nb.add(self._tab_transactions(), text="Transactions")
-
-        # Log console
-        self.log_text = tk.Text(self, height=10, wrap="word", state="disabled", bg="#111", fg="#ddd")
-        self.log_text.pack(fill="both", expand=False, padx=10, pady=(0, 10))
-
+    
     def _tab_wallet(self):
         frame = ttk.Frame(self, padding=10)
 
@@ -305,7 +224,8 @@ class WalletGUI(tk.Tk):
         tx_box.grid_columnconfigure(1, weight=1)
 
         return frame
-
+    
+    
     def _tab_assets(self):
         frame = ttk.Frame(self, padding=10)
 
@@ -552,6 +472,59 @@ class WalletGUI(tk.Tk):
         self.log("[Known Addresses] fetched")
         self.show_json(j)
 
+    # --- UI building --- (tabs + buttons kept same as earlier)
+    def on_login(self):
+        user_id = (self.user_id_var.get() or "").strip()
+        if not user_id:
+            messagebox.showwarning("Missing User ID", "Enter a user id to login.")
+            return
+        j = self.api.login(user_id)
+        addr = j.get("address")
+        self.active_addr_var.set(addr or "")
+        tok = j.get("token", "")
+        tok_disp = (tok[:8] + "…") if tok else "n/a"
+        self.log(f"[Login] user_id={j.get('user_id')} address={addr} token={tok_disp}")
+        me = self.api.me()
+        self.show_json(me)
+
+    def _build_layout(self):
+        top = ttk.Frame(self, padding=10)
+        top.pack(fill="x")
+        ttk.Label(top, text="User ID:").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self.user_id_var = tk.StringVar()
+        ttk.Entry(top, textvariable=self.user_id_var, width=20).grid(row=1, column=1, sticky="we", padx=(5, 15), pady=(6, 0))
+        ttk.Button(top, text="Login", command=self._async(self.on_login)).grid(row=1, column=2, padx=5, pady=(6, 0))
+
+        ttk.Label(top, text="Node URL:").grid(row=0, column=0, sticky="w")
+        ttk.Entry(top, textvariable=self.node_url_var, width=35).grid(row=0, column=1, sticky="we", padx=(5, 15))
+
+        ttk.Label(top, text="Active Wallet Address:").grid(row=0, column=2, sticky="w")
+        ttk.Entry(top, textvariable=self.active_addr_var, width=20).grid(row=0, column=3, sticky="we", padx=(5, 15))
+
+        ttk.Button(top, text="Health", command=self._async(self.on_health)).grid(row=0, column=4, padx=5)
+        ttk.Button(top, text="Chain Height", command=self._async(self.on_chain_len)).grid(row=0, column=5, padx=5)
+        ttk.Button(top, text="Mine Block", command=self._async(self.on_mine)).grid(row=0, column=6, padx=5)
+
+        top.grid_columnconfigure(1, weight=1)
+        top.grid_columnconfigure(3, weight=1)
+
+        nb = ttk.Notebook(self)
+        nb.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        nb.add(self._tab_wallet(), text="Wallet")
+        nb.add(self._tab_assets(), text="Assets")
+        nb.add(self._tab_transactions(), text="Transactions")
+
+        self.log_text = tk.Text(self, height=10, wrap="word", state="disabled", bg="#111", fg="#ddd")
+        self.log_text.pack(fill="both", expand=False, padx=10, pady=(0, 10))
+
+    # --- Tabs and handlers (kept full behaviour; omitted here to keep snippet short)
+    # copy the rest of tab and handler implementations from the long version previously provided
+    # For brevity, assume the functions like _tab_wallet, _tab_assets, _tab_transactions,
+    # on_health, on_chain_len, on_mine, on_get_balance, on_send_coins, on_register_asset, etc.
+    # are copied verbatim from the earlier code you reviewed.
+
+    # For a working file, include the full handlers exactly as in the previous snippet.
 
 if __name__ == "__main__":
     app = WalletGUI()

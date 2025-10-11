@@ -3,8 +3,5 @@ python-dotenv
 requests
 cryptography
 pubnub
-dj-database-url
-djangorestframework
-Django
 gunicorn
 plyvel
