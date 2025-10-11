@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Prevent internal helper scripts from repeatedly pinging /health
+# Applications inside the container should check this env var before
+# attempting local curl-based health probes.
+export DISABLE_INTERNAL_HEALTH_PINGS="${DISABLE_INTERNAL_HEALTH_PINGS:-1}"
+
 if [[ "${ROLE:-ROOT}" == "MINER" ]]; then
   echo "[entrypoint] starting miner client..."
   exec python -u /app/miner_client.py

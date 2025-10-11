@@ -26,3 +26,6 @@ docker exec -it a62aff25a4bb python manage.py ingest_chain --base http://host.do
 ubuntu@ip-172-31-12-54:~/cuddly-hex/miners$ export MINER_TOKEN="secret123"
 ubuntu@ip-172-31-12-54:~/cuddly-hex/miners$ export MINER_TOKEN_HEADER="Authorization" # or "X-Miner-Token"
 ubuntu@ip-172-31-12-54:~/cuddly-hex/miners$ PYTHONPATH=.. python3 simple_miner.py --node http://127.0.0.1:5000 --addr miner-demo-addr
+git fetch --all
+git checkout master
+git reset --hard origin/master

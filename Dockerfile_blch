@@ -1,4 +1,3 @@
-# Dockerfile_blch
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -8,28 +7,26 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install minimal system deps
+# Install minimal system deps required for building and LevelDB support.
+# NOTE: we intentionally do not install 'curl' to avoid in-container
+# scripts using curl to poll internal endpoints repeatedly.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl \
+ && apt-get install -y --no-install-recommends libleveldb-dev build-essential \
  && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install
 COPY requirements.txt /app/requirements.txt
-RUN apt-get update && apt-get install -y libleveldb-dev build-essential
 
 RUN pip install --upgrade pip \
  && pip install -r /app/requirements.txt
 
 # Copy app and scripts into /app
 COPY blockchain_backend/ /app/blockchain_backend/
-COPY miners/ /app/
 COPY docker/entrypoint.sh /app/entrypoint.sh
-COPY docker/miner.sh /app/docker/miner.sh
 
 # Make sure shell scripts use LF line endings and are executable.
 # (If you build on Windows Git might check out CRLF; this ensures executable bit.)
-RUN chmod +x /app/entrypoint.sh /app/docker/miner.sh || true
-
+RUN chmod +x /app/entrypoint.sh || true
 
 # Create non-root user and set ownership, then switch to it
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app

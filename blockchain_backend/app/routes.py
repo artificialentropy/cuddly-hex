@@ -39,7 +39,7 @@ from blockchain_backend.utils.config import (
 
 # Try to import the LevelDB store we created earlier. If unavailable, fall back to file-based store.
 try:
-    from blockchain_backend.db.leveldb_store import open_default_store
+    from blockchain_backend.db.level_db import open_default_store
     try:
         STORE = open_default_store()
         print(f"[routes] LevelDB store opened at: {STORE.path}")
@@ -50,7 +50,8 @@ except Exception as e:
     STORE = None
     # don't spam logs in non-leveldb setups
     # print(f"[routes] leveldb integration not available: {e}")
-
+CHAIN_STORE_PATH = os.getenv("CHAIN_STORE_PATH") or "/data/leveldb/chain_store.json"
+CHAIN_STORE_PATH = os.path.abspath(CHAIN_STORE_PATH)
 # -------------------------
 # Basic rate limiting for tx submission
 # -------------------------
@@ -166,8 +167,7 @@ def _atomic_read_json(path):
         return None
 
 # ensure CHAIN_STORE_PATH default is absolute and writable
-CHAIN_STORE_PATH = os.getenv("CHAIN_STORE_PATH") or "/data/chain_store.json"
-CHAIN_STORE_PATH = os.path.abspath(CHAIN_STORE_PATH)
+
 
 def save_chain_to_disk(chain_json):
     """Save normalized chain JSON to disk for other workers to load."""
