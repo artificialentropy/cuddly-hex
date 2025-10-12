@@ -30,3 +30,4 @@ git fetch --all
 git checkout master
 git reset --hard origin/master
 python -m miners.simple_miner --node http://127.0.0.1:5000 --addr miner-demo-addr --debug-dir ./debug --token secret123
+ssh -i "MSI AWS.pem" ubuntu@3.108.252.40

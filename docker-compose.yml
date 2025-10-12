@@ -74,7 +74,7 @@ services:
       ROLE: ROOT
       PYTHONPATH: /app
       SELF_BASE: http://node0:5000
-      PEER: False
+      PEER: "False"
       ROOT_HOST: node0
       ROOT_PORT: 5000
       FLASK_DEBUG: "1"
@@ -111,7 +111,7 @@ services:
       ROLE: VALIDATOR
       PYTHONPATH: /app
       SELF_BASE: http://node1:5000
-      PEER: True
+      PEER: "True"
       ROOT_HOST: node0
       ROOT_PORT: 5000
       FLASK_DEBUG: "1"
@@ -149,7 +149,7 @@ services:
       ROLE: VALIDATOR
       PYTHONPATH: /app
       SELF_BASE: http://node2:5000
-      PEER: True
+      PEER: "True"
       ROOT_HOST: node0
       ROOT_PORT: 5000
       FLASK_DEBUG: "1"
@@ -187,7 +187,7 @@ services:
       ROLE: VALIDATOR
       PYTHONPATH: /app
       SELF_BASE: http://node3:5000
-      PEER: True
+      PEER: "True"
       ROOT_HOST: node0
       ROOT_PORT: 5000
       FLASK_DEBUG: "0"
