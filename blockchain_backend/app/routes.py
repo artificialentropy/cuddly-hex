@@ -860,46 +860,84 @@ def add_peer():
     except Exception as e:
         return jsonify({"error": f"Could not sync from peer: {e}"}), 500
 
-
 @app.route("/sync_from_peer", methods=["POST"])
 def sync_from_peer():
-    if ROLE == "VALIDATOR":
-        return jsonify({"ok": False, "error": "only root accepts sync"}), 403
+    """
+    Root-only endpoint. Validator nodes may POST their base URL (peer_url) here
+    so that root fetches the validator's chain and adopts it if it's longer.
+    Returns 200 with {"status":"replaced", "new_length": n} on success,
+    200 {"status":"no_change", "length": n} if no replacement needed,
+    403 if not allowed on validators, or 400/500 for errors.
+    """
+    # Protect: only ROOT should accept incoming sync requests
+    if ROLE != "ROOT":
+        return jsonify({"error": "only root accepts sync requests"}), 403
 
-    peer_url = request.get_json(force=True).get("peer_url")
+    data = request.get_json(silent=True) or {}
+    peer_url = data.get("peer_url")
     if not peer_url:
-        return jsonify({"ok": False, "error": "peer_url required"}), 400
+        return jsonify({"error": "missing peer_url"}), 400
 
     try:
-        r = requests.get(f"{peer_url}/blockchain", timeout=5)
+        app.logger.info(f"[sync_from_peer] fetching chain from {peer_url}")
+        r = requests.get(f"{peer_url}/blockchain", timeout=10)
         r.raise_for_status()
-        chain_data = r.json()
-        if isinstance(chain_data, dict) and "chain" in chain_data:
-            remote_chain_raw = chain_data["chain"]
-        else:
-            remote_chain_raw = chain_data
-        sanitized_remote = [ _strip_block_extras(b) for b in (remote_chain_raw or []) ]
-        if hasattr(Block, "from_json"):
-            candidate = [Block.from_json(b) for b in sanitized_remote]
-        else:
-            try:
-                candidate = Blockchain.from_json(sanitized_remote).chain
-            except Exception:
-                candidate = [Block.from_json(b) for b in sanitized_remote]
+        payload = r.json()
 
-        if len(candidate) <= len(blockchain.chain):
-            return jsonify({"ok": False, "reason": "candidate_not_longer"}), 200
+        # normalize chain payload shape
+        if isinstance(payload, dict) and "chain" in payload:
+            remote_chain_raw = payload["chain"]
+        else:
+            remote_chain_raw = payload
 
-        blockchain.replace_chain(candidate)
-        # persist normalized chain for other workers
+        # sanitize and drop any non-block extras (like 'version')
+        sanitized = [{k: v for k, v in (b or {}).items() if k != "version"} for b in (remote_chain_raw or [])]
+
+        # Convert to Block objects / Blockchain instance using existing helpers
         try:
-            save_chain_to_disk(normalize_chain_json_for_output(remote_chain_raw))
+            # prefer Blockchain.from_json if available (keeps internal invariants)
+            remote_bc = Blockchain.from_json(sanitized)
+            incoming_chain = remote_bc.chain
         except Exception:
-            pass
-        return jsonify({"ok": True, "new_len": len(blockchain.chain)}), 200
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+            incoming_chain = [Block.from_json(b) for b in sanitized]
 
+        # ensure we actually got something sensible
+        if not incoming_chain:
+            return jsonify({"error": "fetched empty chain from peer"}), 400
+
+        from blockchain_backend.app import blockchain as app_blockchain
+
+        remote_len = len(incoming_chain)
+        local_len = len(app_blockchain.chain)
+        app.logger.info(f"[sync_from_peer] remote_len={remote_len}, local_len={local_len}")
+
+        if remote_len > local_len:
+            # Replace chain in memory (and rely on blockchain.replace_chain to persist LevelDB if it does)
+            app_blockchain.replace_chain(incoming_chain)
+            # Persist normalized JSON for other workers / future starts
+            try:
+                normalized = normalize_chain_json_for_output(remote_chain_raw)
+                save_chain_to_disk(normalized)
+            except Exception as e:
+                app.logger.exception("[sync_from_peer] failed to save_chain_to_disk")
+
+            # Broadcast new tip if pubsub supports JSON broadcast (best-effort)
+            try:
+                if pubsub and hasattr(pubsub, "broadcast_block_json"):
+                    pubsub.broadcast_block_json(normalize_block_json_for_output(incoming_chain[-1], height=len(app_blockchain.chain)-1))
+            except Exception:
+                app.logger.exception("[sync_from_peer] pubsub broadcast failed (ignored)")
+
+            app.logger.info(f"[sync_from_peer] replaced chain: new_len={len(app_blockchain.chain)}")
+            return jsonify({"status": "replaced", "new_length": len(app_blockchain.chain)}), 200
+
+        # remote not longer -> no action
+        app.logger.info("[sync_from_peer] no replacement needed (remote not longer)")
+        return jsonify({"status": "no_change", "length": local_len}), 200
+
+    except Exception as exc:
+        app.logger.exception("[sync_from_peer] failed")
+        return jsonify({"error": str(exc)}), 500
 
 # -------------------------
 # Asset registry

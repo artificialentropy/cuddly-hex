@@ -1,0 +1,81 @@
+{
+  "block": {
+    "data": [
+      {
+        "id": "d99a24fd",
+        "input": {
+          "address": "6e807800",
+          "balances": {
+            "COIN": 1000
+          },
+          "fee": 0,
+          "public_key": "-----BEGIN PUBLIC KEY-----\nMFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAEDkMcZDzGHU7/2Indac1NEs1v2QjOBpzt\nDMjHtpA4f3+rd0wZ+U0JI4uoA3V0mPg8i9Yzb6DL0qLnD5dzQgmrhQ==\n-----END PUBLIC KEY-----\n",
+          "signature": [
+            "7dd4eefa220021fda3b734f08250fce612912ea5cfaf6632fdcef5fa4a478536",
+            "ad1ebc2a1fb8dba9ce87d8e2f371bf969d062793f0cc9a638792ac95cb085e0a"
+          ],
+          "timestamp": 1760251775
+        },
+        "metadata": {},
+        "output": {
+          "290ee71c": {
+            "COIN": 11
+          },
+          "6e807800": {
+            "COIN": 989
+          }
+        }
+      },
+      {
+        "id": "c2d2f943",
+        "input": {
+          "address": "6e807800",
+          "balances": {
+            "COIN": 1000
+          },
+          "fee": 0,
+          "public_key": "-----BEGIN PUBLIC KEY-----\nMFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAEDkMcZDzGHU7/2Indac1NEs1v2QjOBpzt\nDMjHtpA4f3+rd0wZ+U0JI4uoA3V0mPg8i9Yzb6DL0qLnD5dzQgmrhQ==\n-----END PUBLIC KEY-----\n",
+          "signature": [
+            "75ed16cf11e70b6ed992df7b7cad5eda539f46ec72577e2430db887145cb2436",
+            "b2b32f411ab5f57f223fdd72b874ae3821d61559d653c78687599f4679021981"
+          ],
+          "timestamp": 1760251776
+        },
+        "metadata": {},
+        "output": {
+          "290ee71c": {
+            "COIN": 11
+          },
+          "6e807800": {
+            "COIN": 989
+          }
+        }
+      },
+      {
+        "id": "cb-1760251798",
+        "input": {
+          "address": "*--official-mining-reward--*"
+        },
+        "metadata": {
+          "miner": "miner-demo-addr"
+        },
+        "output": {
+          "miner-demo-addr": {
+            "COIN": 50
+          }
+        }
+      }
+    ],
+    "difficulty": 3,
+    "hash": "08aae77c5f4f68d97610d437c25fa21f4cb3bce007f30a4ebccb60610e619a32",
+    "last_hash": "0c732bce77a22e00c438b3bad96e70d6ee80eba39f8529625bf9d3816e8cd028",
+    "merkle": "8fd12963d2e72c183ef951793155f0db2f02696917cf692d85e9a0806b79a989",
+    "nonce": 15,
+    "timestamp": 1760251798
+  },
+  "response": {
+    "height": 4,
+    "ok": true,
+    "tip": "08aae77c5f4f68d97610d437c25fa21f4cb3bce007f30a4ebccb60610e619a32"
+  }
+}

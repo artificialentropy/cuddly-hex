@@ -14,7 +14,7 @@ import inspect
 from typing import Any, Dict, List, Tuple, Optional, Callable, Union
 from copy import deepcopy
 
-import miner_client as mc
+from . import miner_client as mc
 
 # optional GPU rig (cpu-multiprocess fallback)
 try:

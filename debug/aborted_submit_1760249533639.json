@@ -1,0 +1,103 @@
+{
+  "attempted_candidate": {
+    "data": [
+      {
+        "id": "bb6254e2",
+        "input": {
+          "address": "ad3246d8",
+          "balances": {
+            "COIN": 1000
+          },
+          "fee": 0,
+          "public_key": "-----BEGIN PUBLIC KEY-----\nMFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAEz28L94pgf1qa935MO453MdVy3465gBl+\n0E+kE2Gg8FuLu5SMftyK1XgCeMxhefR6fWUtOPTUQtFm682GbYPy4Q==\n-----END PUBLIC KEY-----\n",
+          "signature": [
+            "47212026ce0ca4877a9aab7d7e563d565f45a5fb7f9071a97e80c41f47ecdef3",
+            "2dd5032f0eb817692804a80dc4c6661e001a8bf4355f81aaea00d488e38a7bb7"
+          ],
+          "timestamp": 1760249502
+        },
+        "metadata": {},
+        "output": {
+          "ad3246d8": {
+            "COIN": 989
+          },
+          "c236bb8f": {
+            "COIN": 11
+          }
+        }
+      },
+      {
+        "id": "2113c28a",
+        "input": {
+          "address": "ad3246d8",
+          "balances": {
+            "COIN": 1000
+          },
+          "fee": 0,
+          "public_key": "-----BEGIN PUBLIC KEY-----\nMFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAEz28L94pgf1qa935MO453MdVy3465gBl+\n0E+kE2Gg8FuLu5SMftyK1XgCeMxhefR6fWUtOPTUQtFm682GbYPy4Q==\n-----END PUBLIC KEY-----\n",
+          "signature": [
+            "be8609ebf4e34b152f0a38705fcc5375bb7bf407a239315f521576042859b89c",
+            "e2127f6ce651de5684b7973181dfa1180d10975427297f80115fc376459e1199"
+          ],
+          "timestamp": 1760249501
+        },
+        "metadata": {},
+        "output": {
+          "ad3246d8": {
+            "COIN": 989
+          },
+          "c236bb8f": {
+            "COIN": 11
+          }
+        }
+      },
+      {
+        "id": "6a9fee18",
+        "input": {
+          "address": "ad3246d8",
+          "balances": {
+            "COIN": 1000
+          },
+          "fee": 0,
+          "public_key": "-----BEGIN PUBLIC KEY-----\nMFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAEz28L94pgf1qa935MO453MdVy3465gBl+\n0E+kE2Gg8FuLu5SMftyK1XgCeMxhefR6fWUtOPTUQtFm682GbYPy4Q==\n-----END PUBLIC KEY-----\n",
+          "signature": [
+            "c5c60e3081d4baddf3a1b4f098ce742507f4d762394455a1e8a65f61b12d0d9d",
+            "73f492664f81a5f999014c4497f74494c3483121e0fa49b235efc39baabc6de4"
+          ],
+          "timestamp": 1760249501
+        },
+        "metadata": {},
+        "output": {
+          "ad3246d8": {
+            "COIN": 989
+          },
+          "c236bb8f": {
+            "COIN": 11
+          }
+        }
+      },
+      {
+        "id": "cb-1760249533",
+        "input": {
+          "address": "*--official-mining-reward--*"
+        },
+        "metadata": {
+          "miner": "miner-demo-addr"
+        },
+        "output": {
+          "miner-demo-addr": {
+            "COIN": 50
+          }
+        }
+      }
+    ],
+    "difficulty": 3,
+    "hash": "1c59c30beeb17414745e77ca8502e99778872129d59431744651c343f46c10d1",
+    "height": null,
+    "last_hash": "003cda4248a275ac37330fe030daaa10b81a09389697458fbcd45d137438eb46",
+    "merkle": "4ca7c875e553adaebb3f2f073dacfb2735f6b96bf4675ccd145032550b88a626",
+    "nonce": 12,
+    "timestamp": 1760249533
+  },
+  "note": "aborted by submit-guard (seconds mismatch)"
+}

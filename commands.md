@@ -29,3 +29,4 @@ ubuntu@ip-172-31-12-54:~/cuddly-hex/miners$ PYTHONPATH=.. python3 simple_miner.p
 git fetch --all
 git checkout master
 git reset --hard origin/master
+python -m miners.simple_miner --node http://127.0.0.1:5000 --addr miner-demo-addr --debug-dir ./debug --token secret123

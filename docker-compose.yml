@@ -19,10 +19,10 @@ services:
           "CMD-SHELL",
           "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} -h 127.0.0.1",
         ]
-      interval: 30s
+      interval: 5s
       timeout: 5s
-      retries: 6
-      start_period: 30s
+      retries: 12
+      start_period: 10s
 
   api:
     build:
@@ -53,23 +53,13 @@ services:
       - "8000:8000"
     volumes:
       - ./api_backend:/app
-    # replaced curl-based healthcheck with a Python-based check (no curl required)
     healthcheck:
       test: >
-        bash -lc "python - <<'PY'
-        import sys, urllib.request, json
-        try:
-            r = urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)
-            j = json.load(r)
-            ok = j.get('ok') is True or j.get('status') == 'ok'
-            sys.exit(0 if ok else 1)
-        except Exception:
-            sys.exit(1)
-        PY"
-      interval: 30s
-      timeout: 5s
-      retries: 6
-      start_period: 30s
+        bash -lc "curl -fsS http://127.0.0.1:8000/health | grep -E '\"ok\": *true|\"status\": *\"ok\"'"
+      interval: 5s
+      timeout: 3s
+      retries: 50
+      start_period: 20s
 
   # --- blockchain node images (shared build) ---
   node0:
@@ -84,7 +74,7 @@ services:
       ROLE: ROOT
       PYTHONPATH: /app
       SELF_BASE: http://node0:5000
-      PEER: "" # bootstrap node: empty string (no initial peer)
+      PEER: False
       ROOT_HOST: node0
       ROOT_PORT: 5000
       FLASK_DEBUG: "1"
@@ -94,32 +84,18 @@ services:
       PUBNUB_UUID: node0
       MINER_TOKEN: secret123
       CHAIN_DB_PATH: /data/leveldb
-      # write chain snapshot into the leveldb mount (writable by appuser)
       CHAIN_STORE_PATH: /data/leveldb/chain_store.json
+
       GUNICORN_CMD_ARGS: "--log-level debug --capture-output --access-logfile - --error-logfile -"
-      # disable internal pinging by default (your entrypoint exports this)
-      DISABLE_INTERNAL_HEALTH_PINGS: "1"
     ports:
       - "5000:5000"
     healthcheck:
-      # use Python-based check (no curl), and reduce frequency to avoid constant pings
       test: >
-        bash -lc "python - <<'PY'
-        import sys, json, urllib.request
-        try:
-            r = urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)
-            j = json.load(r)
-            # consider node healthy if ready true or height >= 1
-            if j.get('ready') is True or int(j.get('height') or 0) >= 1:
-                sys.exit(0)
-            sys.exit(1)
-        except Exception:
-            sys.exit(1)
-        PY"
+        bash -lc "curl -sf http://127.0.0.1:5000/health | grep -E '\"ready\": *true|\"height\": *[1-9]'"
       interval: 30s
-      timeout: 5s
-      retries: 6
-      start_period: 40s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
     volumes:
       - ./data/node0/leveldb:/data/leveldb
 
@@ -135,7 +111,7 @@ services:
       ROLE: VALIDATOR
       PYTHONPATH: /app
       SELF_BASE: http://node1:5000
-      PEER: "node0:5000" # connect to bootstrap node (string)
+      PEER: True
       ROOT_HOST: node0
       ROOT_PORT: 5000
       FLASK_DEBUG: "1"
@@ -146,7 +122,6 @@ services:
       CHAIN_DB_PATH: /data/leveldb
       CHAIN_STORE_PATH: /data/leveldb/chain_store.json
       GUNICORN_CMD_ARGS: "--log-level debug --capture-output --access-logfile - --error-logfile -"
-      DISABLE_INTERNAL_HEALTH_PINGS: "1"
     ports:
       - "5001:5000"
     depends_on:
@@ -154,21 +129,11 @@ services:
         condition: service_healthy
     healthcheck:
       test: >
-        bash -lc "python - <<'PY'
-        import sys, json, urllib.request
-        try:
-            r = urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)
-            j = json.load(r)
-            if j.get('ready') is True or j.get('ok') is True:
-                sys.exit(0)
-            sys.exit(1)
-        except Exception:
-            sys.exit(1)
-        PY"
+        bash -lc "curl -sf http://127.0.0.1:5000/health | grep -E '\"ready\": *true|\"ok\": *true'"
       interval: 30s
-      timeout: 5s
-      retries: 6
-      start_period: 40s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
     volumes:
       - ./data/node1/leveldb:/data/leveldb
 
@@ -184,7 +149,7 @@ services:
       ROLE: VALIDATOR
       PYTHONPATH: /app
       SELF_BASE: http://node2:5000
-      PEER: "node0:5000"
+      PEER: True
       ROOT_HOST: node0
       ROOT_PORT: 5000
       FLASK_DEBUG: "1"
@@ -195,7 +160,6 @@ services:
       CHAIN_DB_PATH: /data/leveldb
       CHAIN_STORE_PATH: /data/leveldb/chain_store.json
       GUNICORN_CMD_ARGS: "--log-level debug --capture-output --access-logfile - --error-logfile -"
-      DISABLE_INTERNAL_HEALTH_PINGS: "1"
     ports:
       - "5002:5000"
     depends_on:
@@ -203,21 +167,11 @@ services:
         condition: service_healthy
     healthcheck:
       test: >
-        bash -lc "python - <<'PY'
-        import sys, json, urllib.request
-        try:
-            r = urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)
-            j = json.load(r)
-            if j.get('ready') is True or j.get('ok') is True:
-                sys.exit(0)
-            sys.exit(1)
-        except Exception:
-            sys.exit(1)
-        PY"
+        bash -lc "curl -sf http://127.0.0.1:5000/health | grep -E '\"ready\": *true|\"ok\": *true'"
       interval: 30s
-      timeout: 5s
-      retries: 6
-      start_period: 40s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
     volumes:
       - ./data/node2/leveldb:/data/leveldb
 
@@ -233,7 +187,7 @@ services:
       ROLE: VALIDATOR
       PYTHONPATH: /app
       SELF_BASE: http://node3:5000
-      PEER: "node0:5000"
+      PEER: True
       ROOT_HOST: node0
       ROOT_PORT: 5000
       FLASK_DEBUG: "0"
@@ -244,7 +198,6 @@ services:
       CHAIN_DB_PATH: /data/leveldb
       CHAIN_STORE_PATH: /data/leveldb/chain_store.json
       GUNICORN_CMD_ARGS: "--log-level debug --capture-output --access-logfile - --error-logfile -"
-      DISABLE_INTERNAL_HEALTH_PINGS: "1"
     ports:
       - "5003:5000"
     depends_on:
@@ -252,21 +205,11 @@ services:
         condition: service_healthy
     healthcheck:
       test: >
-        bash -lc "python - <<'PY'
-        import sys, json, urllib.request
-        try:
-            r = urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)
-            j = json.load(r)
-            if j.get('ready') is True or j.get('ok') is True:
-                sys.exit(0)
-            sys.exit(1)
-        except Exception:
-            sys.exit(1)
-        PY"
+        bash -lc "curl -sf http://127.0.0.1:5000/health | grep -E '\"ready\": *true|\"ok\": *true'"
       interval: 30s
-      timeout: 5s
-      retries: 6
-      start_period: 40s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
     volumes:
       - ./data/node3/leveldb:/data/leveldb
 

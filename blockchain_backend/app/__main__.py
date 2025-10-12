@@ -76,7 +76,7 @@ def startup_sync_if_peer() -> None:
     print(f"[PEER] Attempting initial sync from {base}")
 
     # Wait until root is minimally ready
-    wait_for_root_ready(max_wait_s=120, interval_s=2)
+    wait_for_root_ready(max_wait_s=300, interval_s=5)
 
     try:
         resp = requests.get(f"{base}/blockchain", timeout=5)
