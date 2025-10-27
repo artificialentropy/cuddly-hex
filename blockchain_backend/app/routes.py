@@ -1,12 +1,13 @@
 import os
 import uuid
-import time
+import time, datetime
 import requests
 from collections import defaultdict, deque
 from flask import request, jsonify
 import traceback
 import json
-
+import hashlib
+from typing import List, Dict, Tuple, Any, Union
 # fcntl is POSIX-only; guard import for cross-platform compatibility
 try:
     import fcntl  # for file locking on POSIX
@@ -58,7 +59,8 @@ CHAIN_STORE_PATH = os.path.abspath(CHAIN_STORE_PATH)
 RATE_BUCKETS = defaultdict(lambda: deque())  # ip -> timestamps
 MAX_REQ = 20
 WINDOW_S = 10
-
+_CHAIN_SNAPSHOT_LOADED = False
+_CHAIN_SNAPSHOT_LOCK = threading.Lock()
 
 def _rate_ok(ip):
     q = RATE_BUCKETS[ip]
@@ -168,6 +170,154 @@ def _atomic_read_json(path):
 
 # ensure CHAIN_STORE_PATH default is absolute and writable
 
+def merkle_from_txs(txs: List[Any], include_id: bool = False, parent_hexcat: bool = False) -> str:
+    """
+    Produce a merkle-root-like hex string from a list of tx dicts.
+    """
+    def leaf_hash(tx):
+        try:
+            if include_id and isinstance(tx, dict) and tx.get("id"):
+                s = str(tx.get("id"))
+            else:
+                s = json.dumps(tx or {}, separators=(",", ":"), sort_keys=True)
+        except Exception:
+            s = str(tx)
+        return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+    hs = [leaf_hash(t) for t in (txs or [])]
+
+    if not hs:
+        return hashlib.sha256(b"").hexdigest()
+
+    while len(hs) > 1:
+        next_level = []
+        for i in range(0, len(hs), 2):
+            left = hs[i]
+            right = hs[i + 1] if i + 1 < len(hs) else left
+            if parent_hexcat:
+                try:
+                    bleft = bytes.fromhex(left)
+                    bright = bytes.fromhex(right)
+                    ph = hashlib.sha256(bleft + bright).hexdigest()
+                except Exception:
+                    ph = hashlib.sha256((left + right).encode("utf-8")).hexdigest()
+            else:
+                ph = hashlib.sha256((left + right).encode("utf-8")).hexdigest()
+            next_level.append(ph)
+        hs = next_level
+    return hs[0]
+
+
+def header_json_hash(tip_version: int,
+                     last_hash: str,
+                     merkle: str,
+                     timestamp: int,
+                     difficulty: int,
+                     nonce: int,
+                     double: bool = False) -> Tuple[str, str]:
+    """
+    Compute two canonical header hashes derived from a JSON serialization and a bytes-like
+    serialization. Returns a tuple (primary_hex, bytes_variant_hex).
+    """
+    hdr = {
+        "version": int(tip_version or 0),
+        "last_hash": last_hash or "",
+        "merkle": merkle or "",
+        "timestamp": int(timestamp or 0),
+        "difficulty": int(difficulty or 0),
+        "nonce": int(nonce or 0),
+    }
+    json_bytes = json.dumps(hdr, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+    try:
+        b_parts = [
+            int(tip_version or 0).to_bytes(4, "big", signed=False),
+            (last_hash or "").encode("utf-8"),
+            (merkle or "").encode("utf-8"),
+            int(timestamp or 0).to_bytes(8, "big", signed=False),
+            int(difficulty or 0).to_bytes(4, "big", signed=False),
+            int(nonce or 0).to_bytes(8, "big", signed=False),
+        ]
+        bytes_serial = b"||".join([p if isinstance(p, bytes) else str(p).encode("utf-8") for p in b_parts])
+    except Exception:
+        bytes_serial = json_bytes
+
+    if double:
+        primary = hashlib.sha256(hashlib.sha256(json_bytes).digest()).hexdigest()
+        bytes_variant = hashlib.sha256(hashlib.sha256(bytes_serial).digest()).hexdigest()
+    else:
+        primary = hashlib.sha256(json_bytes).hexdigest()
+        bytes_variant = hashlib.sha256(bytes_serial).hexdigest()
+
+    return primary, bytes_variant
+
+
+def header_bytes_hashes(tip_version: int,
+                        last_hash: str,
+                        merkle: str,
+                        timestamp: int,
+                        difficulty: int,
+                        nonce: int) -> List[Dict[str, Any]]:
+    """
+    Produce a small list of byte-serialization variants and their single/double sha256 hashes.
+    """
+    variants = []
+
+    try:
+        bA = (
+            int(tip_version or 0).to_bytes(4, "big") +
+            (last_hash or "").encode("utf-8") +
+            (merkle or "").encode("utf-8") +
+            int(timestamp or 0).to_bytes(8, "big") +
+            int(difficulty or 0).to_bytes(4, "big") +
+            int(nonce or 0).to_bytes(8, "big")
+        )
+        sA = hashlib.sha256(bA).hexdigest()
+        dA = hashlib.sha256(hashlib.sha256(bA).digest()).hexdigest()
+        variants.append({"single_sha": sA, "double_sha": dA, "params": {"name": "packed_be"}})
+    except Exception:
+        pass
+
+    try:
+        bB = (str(tip_version or 0) + (last_hash or "") + (merkle or "") + str(timestamp or 0) +
+              str(difficulty or 0) + str(nonce or 0)).encode("utf-8")
+        sB = hashlib.sha256(bB).hexdigest()
+        dB = hashlib.sha256(hashlib.sha256(bB).digest()).hexdigest()
+        variants.append({"single_sha": sB, "double_sha": dB, "params": {"name": "text_concat"}})
+    except Exception:
+        pass
+
+    try:
+        bC = ("|".join([
+            str(tip_version or 0),
+            (last_hash or ""),
+            (merkle or ""),
+            str(int(timestamp or 0)),
+            str(int(difficulty or 0)),
+            str(int(nonce or 0)),
+        ])).encode("utf-8")
+        sC = hashlib.sha256(bC).hexdigest()
+        dC = hashlib.sha256(hashlib.sha256(bC).digest()).hexdigest()
+        variants.append({"single_sha": sC, "double_sha": dC, "params": {"name": "delim_pipe"}})
+    except Exception:
+        pass
+
+    try:
+        bD = (
+            int(tip_version or 0).to_bytes(4, "little") +
+            (last_hash or "").encode("utf-8") +
+            (merkle or "").encode("utf-8") +
+            int(timestamp or 0).to_bytes(8, "little") +
+            int(difficulty or 0).to_bytes(4, "little") +
+            int(nonce or 0).to_bytes(8, "little")
+        )
+        sD = hashlib.sha256(bD).hexdigest()
+        dD = hashlib.sha256(hashlib.sha256(bD).digest()).hexdigest()
+        variants.append({"single_sha": sD, "double_sha": dD, "params": {"name": "packed_le"}})
+    except Exception:
+        pass
+
+    return variants
 
 def save_chain_to_disk(chain_json):
     """Save normalized chain JSON to disk for other workers to load."""
@@ -179,6 +329,7 @@ def save_chain_to_disk(chain_json):
             except Exception as e:
                 print("[save_chain_to_disk] mkdir failed:", e)
         _atomic_write_json(CHAIN_STORE_PATH, chain_json)
+        print("[save_chain_to_disk] succeeded")
     except PermissionError as pe:
         # fallback to /tmp (best-effort)
         try:
@@ -193,34 +344,118 @@ def save_chain_to_disk(chain_json):
 def load_chain_from_disk():
     """
     Load chain from the configured store.
-    - If LevelDB is available and contains blocks, return list of blocks (ordered by 'height' if present).
-    - Else fallback to reading CHAIN_STORE_PATH JSON file (same as previous behavior).
+    - If LevelDB STORE is present and has blocks, return list of blocks (ordered by 'height' if present).
+    - Else fallback to reading CHAIN_STORE_PATH JSON file. If JSON file exists and STORE is available,
+      populate LevelDB from the snapshot (idempotent best-effort).
     Returns: list of block dicts or None
     """
-    # Try LevelDB first
+    # 1) If STORE is available, try reading from it first
+    global STORE
     if STORE is not None:
         try:
+            # If STORE has an iterator method, read blocks
             blocks = []
-            for blk in STORE.iter_blocks():
-                # each blk is a dict (as stored by put_block)
-                if isinstance(blk, dict):
-                    blocks.append(blk)
+            # Adjust the iterator call to your LevelDB wrapper API if different.
+            if hasattr(STORE, "iter_blocks"):
+                for blk in STORE.iter_blocks():
+                    if isinstance(blk, dict):
+                        blocks.append(blk)
+            elif hasattr(STORE, "get_all_blocks"):
+                blocks = STORE.get_all_blocks() or []
+            else:
+                # Generic attempt: try numeric heights
+                try:
+                    i = 0
+                    while True:
+                        b = STORE.get_block_by_height(i)
+                        if b is None:
+                            break
+                        blocks.append(b)
+                        i += 1
+                except Exception:
+                    pass
+
             if blocks:
-                # If height keys exist, sort by height to produce an ordered chain
+                # sort by height if present
                 try:
                     blocks = sorted(blocks, key=lambda b: int(b.get("height", 0)))
                 except Exception:
-                    # fallback to insertion order if sorting fails
                     pass
                 return blocks
         except Exception as e:
             print("[load_chain_from_disk] LevelDB read failed:", e)
 
-    # Fallback to file-based JSON snapshot
+    # 2) Try JSON snapshot
     try:
-        return _atomic_read_json(CHAIN_STORE_PATH)
-    except Exception:
+        snapshot = _atomic_read_json(CHAIN_STORE_PATH)
+        if not snapshot:
+            return None
+        # If snapshot is a dict with 'chain', unwrap:
+        if isinstance(snapshot, dict) and "chain" in snapshot:
+            chain = snapshot["chain"]
+        else:
+            chain = snapshot
+
+        if not isinstance(chain, list) or not chain:
+            return None
+
+        # If STORE present and empty, populate it from snapshot
+        if STORE is not None:
+            try:
+                # check if STORE already has blocks
+                has_blocks = False
+                try:
+                    # re-run quick check for any blocks
+                    if hasattr(STORE, "iter_blocks"):
+                        for _ in STORE.iter_blocks():
+                            has_blocks = True
+                            break
+                    elif hasattr(STORE, "get_all_blocks"):
+                        has_blocks = bool(STORE.get_all_blocks())
+                except Exception:
+                    has_blocks = False
+
+                if not has_blocks:
+                    print("[load_chain_from_disk] populating LevelDB STORE from chain snapshot...")
+                    # Ensure blocks are ordered
+                    try:
+                        chain_sorted = sorted(chain, key=lambda b: int(b.get("height", 0)))
+                    except Exception:
+                        chain_sorted = chain
+
+                    for blk in chain_sorted:
+                        # If your STORE expects canonical block JSON shape, adapt here.
+                        try:
+                            # If STORE provides put_block API:
+                            if hasattr(STORE, "put_block"):
+                                STORE.put_block(blk)
+                            elif hasattr(STORE, "put"):
+                                # generic put with block hash or height
+                                key = blk.get("hash") or str(blk.get("height"))
+                                STORE.put(key, blk)
+                            else:
+                                # best-effort fallback: try store-specific insert
+                                if hasattr(STORE, "db") and hasattr(STORE.db, "put"):
+                                    key = (str(blk.get("height")) + ":" + (blk.get("hash") or ""))[:200]
+                                    STORE.db.put(key.encode("utf-8"), json.dumps(blk).encode("utf-8"))
+                                else:
+                                    print("[load_chain_from_disk] unknown STORE api; skipping write to LevelDB")
+                                    break
+                        except Exception as e:
+                            print(f"[load_chain_from_disk] warning: failed to put block height={blk.get('height')} hash={blk.get('hash')}: {e}")
+                    print("[load_chain_from_disk] LevelDB populate complete.")
+            except Exception as e:
+                print("[load_chain_from_disk] error populating LevelDB:", e)
+
+        # return the chain loaded from JSON
+        return chain
+
+    except FileNotFoundError:
         return None
+    except Exception as e:
+        print("[load_chain_from_disk] json read failed:", e)
+        return None
+
 
 # -------------------------
 # Helpers / headers / JSON normalization
@@ -239,7 +474,31 @@ def normalize_timestamp(ts):
         return t // 1_000_000
     return t
 
-
+def _normalize_value(v: Any) -> Any:
+    """Helper: returns a JSON-serializable normalized value for v."""
+    if v is None:
+        return None
+    if isinstance(v, (str, int, float, bool)):
+        return v
+    if isinstance(v, (bytes, bytearray)):
+        try:
+            return v.hex()
+        except Exception:
+            return v.decode("utf-8", errors="ignore")
+    if isinstance(v, dict):
+        return {kk: _normalize_value(vv) for kk, vv in v.items()}
+    if isinstance(v, list):
+        return [_normalize_value(i) for i in v]
+    if isinstance(v, datetime.datetime):
+        return normalize_timestamp(v)
+    # objects with to_json
+    if hasattr(v, "to_json"):
+        try:
+            return _normalize_value(v.to_json())
+        except Exception:
+            pass
+    # fallback to str
+    return str(v)
 def _serialize_sig_component(v):
     """
     Convert signature numeric component to hex string.
@@ -266,34 +525,34 @@ def _serialize_sig_component(v):
         return str(v)
 
 
-def normalize_tx_json_for_output(tx_json):
-    """
-    Ensure tx_json.signature components are hex strings (avoid floats),
-    ensure input.timestamp normalized, and any other small cleanups.
-    Modifies tx_json in-place and returns it.
-    """
-    try:
-        inp = tx_json.get("input", {})
-        # normalize input timestamp if present
-        if "timestamp" in inp:
-            try:
-                inp["timestamp"] = normalize_timestamp(inp["timestamp"])
-            except Exception:
-                inp["timestamp"] = int(time.time())
+# def normalize_tx_json_for_output(tx_json):
+#     """
+#     Ensure tx_json.signature components are hex strings (avoid floats),
+#     ensure input.timestamp normalized, and any other small cleanups.
+#     Modifies tx_json in-place and returns it.
+#     """
+#     try:
+#         inp = tx_json.get("input", {})
+#         # normalize input timestamp if present
+#         if "timestamp" in inp:
+#             try:
+#                 inp["timestamp"] = normalize_timestamp(inp["timestamp"])
+#             except Exception:
+#                 inp["timestamp"] = int(time.time())
 
-        sig = inp.get("signature")
-        if sig:
-            # signature may be a list/tuple of two big numbers; convert each to hex string
-            if isinstance(sig, (list, tuple)):
-                new_sig = [_serialize_sig_component(v) for v in sig]
-                inp["signature"] = new_sig
-            else:
-                # single value
-                inp["signature"] = _serialize_sig_component(sig)
-        tx_json["input"] = inp
-    except Exception:
-        pass
-    return tx_json
+#         sig = inp.get("signature")
+#         if sig:
+#             # signature may be a list/tuple of two big numbers; convert each to hex string
+#             if isinstance(sig, (list, tuple)):
+#                 new_sig = [_serialize_sig_component(v) for v in sig]
+#                 inp["signature"] = new_sig
+#             else:
+#                 # single value
+#                 inp["signature"] = _serialize_sig_component(sig)
+#         tx_json["input"] = inp
+#     except Exception:
+#         pass
+#     return tx_json
 
 
 def normalize_block_json_for_output(raw_block_json, height=None):
@@ -540,7 +799,80 @@ def _validator_background_sync(interval_sec: int = 5, max_failures: int = 8):
             backoff = min(backoff * 2, 60)
         _time.sleep(backoff)
 
+# --- Block normalizer -------------------------------------------------------
+def normalize_block_for_output(block: Union[Dict, Any]) -> Dict:
+    """
+    Normalize a Block instance or block JSON dict into a JSON-serializable dict.
+    Ensures:
+      - timestamp -> int seconds
+      - data (tx list) normalized via normalize_tx_json_for_output
+      - any bytes/bytearrays inside are hex-encoded
+    """
+    # If it's a block object with to_json or attrs, convert to dict first
+    if hasattr(block, "to_json"):
+        try:
+            raw = block.to_json()
+        except Exception:
+            # try to build from attributes
+            raw = _block_obj_to_dict(block)
+    elif isinstance(block, dict):
+        raw = dict(block)  # shallow copy
+    else:
+        # try to extract attributes
+        raw = _block_obj_to_dict(block)
 
+    out = {}
+    # canonical simple fields
+    for k in ("version", "last_hash", "hash", "nonce", "difficulty", "height"):
+        if k in raw:
+            out[k] = _normalize_value(raw[k])
+
+    # timestamp normalization
+    if "timestamp" in raw:
+        out["timestamp"] = normalize_timestamp(raw["timestamp"])
+    else:
+        out["timestamp"] = 0
+
+    # normalize data (txs)
+    txs = raw.get("data", [])
+    normed = []
+    if isinstance(txs, (list, tuple)):
+        for tx in txs:
+            try:
+                normed.append(normalize_tx_json_for_output(tx))
+            except Exception:
+                normed.append(_normalize_value(tx))
+    else:
+        # if data field is something strange, try to coerce to list
+        normed = [_normalize_value(txs)]
+
+    out["data"] = normed
+
+    # copy any other fields shallowly but normalized
+    for k, v in raw.items():
+        if k in out:
+            continue
+        if k == "data":
+            continue
+        out[k] = _normalize_value(v)
+
+    return out
+
+
+def _block_obj_to_dict(obj: Any) -> Dict:
+    """
+    Best-effort conversion of a Block object to dict by reading common attributes.
+    """
+    d = {}
+    for attr in ("version", "last_hash", "hash", "nonce", "difficulty", "timestamp", "data", "height"):
+        if hasattr(obj, attr):
+            d[attr] = getattr(obj, attr)
+    # include anything in __dict__
+    if hasattr(obj, "__dict__"):
+        for k, v in vars(obj).items():
+            if k not in d:
+                d[k] = v
+    return d
 # start thread at module import (only in validators)
 if ROLE == "VALIDATOR":
     t = threading.Thread(target=_validator_background_sync, kwargs={"interval_sec": 5}, daemon=True)
@@ -563,25 +895,73 @@ def health():
     ready = len(blockchain.chain) > 1
     return jsonify({"ok": True, "ready": ready, "height": len(blockchain.chain), "tip": tip_hash})
 
-
 @app.route("/blockchain")
 def route_blockchain():
-    """
-    Return normalized chain JSON (height + timestamp in seconds + signature hex strings).
-    Also include pid + length for debugging multi-worker divergence.
-    Prefer reading the persisted normalized chain store if present.
-    """
+    global _CHAIN_SNAPSHOT_LOADED
+    # Run auto_sync for validators if desired
     if ROLE == "VALIDATOR":
         auto_sync()
 
-    # Prefer disk-based normalized chain if present (helps multiple workers)
-    disk = load_chain_from_disk()
-    if disk:
-        normalized = disk
-    else:
-        raw = blockchain.to_json()
-        normalized = normalize_chain_json_for_output(raw)
+    # Attempt to load/populate snapshot only once per process
+    if not _CHAIN_SNAPSHOT_LOADED:
+        with _CHAIN_SNAPSHOT_LOCK:
+            if not _CHAIN_SNAPSHOT_LOADED:
+                try:
+                    disk = load_chain_from_disk()
+                    if disk:
+                        print(f"[startup] loaded {len(disk)} blocks from disk snapshot (one-time)")
+                        # only attempt replace/populate via the same startup logic you have
+                        # call your existing startup adoption function (factor out if needed)
+                        # For now we only log — avoid replacing here to preserve safety.
+                except Exception as e:
+                    print("[startup] one-time load_chain_from_disk() failed:", e)
+                _CHAIN_SNAPSHOT_LOADED = True
+
+    # Source of truth for responses: in-memory chain
+    raw = blockchain.to_json()
+    normalized = normalize_chain_json_for_output(raw)
     return jsonify({"pid": os.getpid(), "length": len(normalized), "chain": normalized})
+
+
+
+# @app.route("/blockchain")
+# def route_blockchain():
+#     """
+#     Return normalized chain JSON (height + timestamp in seconds + signature hex strings).
+#     Also include pid + length for debugging multi-worker divergence.
+#     Prefer reading the persisted normalized chain store if present.
+#     """
+#     if ROLE == "VALIDATOR":
+#         auto_sync()
+
+#     # Prefer disk-based normalized chain if present (helps multiple workers)
+#     disk = load_chain_from_disk()
+#     if disk:
+#         print(f"[startup] loaded {len(disk)} blocks from disk snapshot")
+#         # If your in-memory chain is disk only genesis and loaded has more blocks, replace it:
+#         try:
+#             if len(disk) > 1:
+#                 # adapt following lines to your blockchain object methods:
+#                 # set internal chain list or re-initialize from loaded blocks
+#                 if hasattr(blockchain, "replace_chain"):
+#                     # If replace_chain exists and expects a list of block dicts
+#                     blockchain.replace_chain(disk)
+#                     print("[startup] in-memory chain replaced from snapshot")
+#                 else:
+#                     # fallback: directly set attribute if available
+#                     if hasattr(blockchain, "chain"):
+#                         blockchain.chain = disk
+#                         print("[startup] in-memory chain set from snapshot")
+#         except Exception as e:
+#             print("[startup] failed to set in-memory chain from snapshot:", e)
+#     else:
+#         print("[startup] no chain snapshot found on disk (or LevelDB had blocks already).")
+#     if disk:
+#         normalized = disk
+#     else:
+#         raw = blockchain.to_json()
+#         normalized = normalize_chain_json_for_output(raw)
+#     return jsonify({"pid": os.getpid(), "length": len(normalized), "chain": normalized})
 
 
 @app.route("/blockchain/range")
@@ -1228,12 +1608,30 @@ def route_blocks_submit():
         transaction_pool.clear_blockchain_transactions(blockchain)
 
         # persist normalized JSON for cross-worker visibility
+        # try:
+        #     raw_chain = blockchain.to_json()
+        #     normalized_chain = normalize_chain_json_for_output(raw_chain)
+        #     save_chain_to_disk(normalized_chain)
+        #     print("[blocks/submit] save_chain_to_disk succeeded")
+        # except Exception as e:
+        #     print("[blocks/submit] save_chain_to_disk failed:", e)
+
         try:
-            raw_chain = blockchain.to_json()
-            normalized_chain = normalize_chain_json_for_output(raw_chain)
-            save_chain_to_disk(normalized_chain)
+            # normalized JSON for the last block only
+            last_block_json = normalize_block_for_output(cand)   # <-- implement/replace with your normalizer
+            # write single block into STORE (if you have put_block)
+            if STORE is not None and hasattr(STORE, "put_block"):
+                STORE.put_block(last_block_json)
+            # optionally also save full chain snapshot so other workers can read JSON file
+            try:
+                raw_chain = blockchain.to_json()
+                normalized_chain = normalize_chain_json_for_output(raw_chain)
+                save_chain_to_disk(normalized_chain)
+            except Exception:
+                pass
+            print("[pubsub] appended block persisted")
         except Exception as e:
-            print("[blocks/submit] save_chain_to_disk failed:", e)
+            print("[pubsub] persist failed:", e)
 
         if pubsub:
             try:

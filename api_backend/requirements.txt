@@ -1,9 +1,0 @@
-Django
-djangorestframework
-psycopg2-binary
-requests
-gunicorn
-dj-database-url
-django-cors-headers
-django_filter
-drf-nested-routers
